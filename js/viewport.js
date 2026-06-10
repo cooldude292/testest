@@ -108,6 +108,7 @@ const Viewport = (() => {
     drawSnapGuides();
     drawMarquee();
     drawPenPath();
+    drawPuppetPins();
     updateFps();
   }
 
@@ -235,6 +236,43 @@ const Viewport = (() => {
       ctx.rect(sx - 3.5, sy - 3.5, 7, 7);
       ctx.fill(); ctx.stroke();
     });
+    // Bezier tangent handles for selected keys
+    const selKeys = App.selectedKeys.filter(sk => sk.p === "position");
+    const selTimes = new Set(selKeys.map(sk => sk.key.t));
+    p.keys.forEach((k, ki) => {
+      if (!selTimes.has(k.t)) return;
+      const P = parentMatrix(layer, k.t);
+      const [wx, wy] = matApply(P, k.v[0], k.v[1]);
+      const [sx, sy] = compToScreen(wx, wy);
+      // cpOut handle
+      if (k.cpOut) {
+        const [ohx, ohy] = matApply(P, k.cpOut[0], k.cpOut[1]);
+        const [osx, osy] = compToScreen(ohx, ohy);
+        ctx.save();
+        ctx.strokeStyle = "rgba(124,137,240,0.8)"; ctx.lineWidth = 1;
+        ctx.setLineDash([3,3]);
+        ctx.beginPath(); ctx.moveTo(sx,sy); ctx.lineTo(osx,osy); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath(); ctx.arc(osx, osy, 5, 0, Math.PI*2);
+        ctx.fillStyle = "#7c89f0"; ctx.fill();
+        ctx.strokeStyle = "#fff"; ctx.lineWidth = 1; ctx.stroke();
+        ctx.restore();
+      }
+      // cpIn handle
+      if (k.cpIn) {
+        const [ihx, ihy] = matApply(P, k.cpIn[0], k.cpIn[1]);
+        const [isx, isy] = compToScreen(ihx, ihy);
+        ctx.save();
+        ctx.strokeStyle = "rgba(240,160,48,0.8)"; ctx.lineWidth = 1;
+        ctx.setLineDash([3,3]);
+        ctx.beginPath(); ctx.moveTo(sx,sy); ctx.lineTo(isx,isy); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath(); ctx.arc(isx, isy, 5, 0, Math.PI*2);
+        ctx.fillStyle = "#f0a030"; ctx.fill();
+        ctx.strokeStyle = "#fff"; ctx.lineWidth = 1; ctx.stroke();
+        ctx.restore();
+      }
+    });
     ctx.restore();
   }
 
@@ -336,6 +374,45 @@ const Viewport = (() => {
     const rect = canvas.getBoundingClientRect();
     const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
 
+    // puppet tool
+    if (App.tool === "puppet") {
+      const pl = App.selectedLayer();
+      if (!pl) return;
+      const M = worldMatrix(pl, App.time);
+      const [cw, ch] = contentSize(pl);
+      const [wx, wy] = screenToComp(sx, sy);
+      // Hit-test existing pins (at deformed position)
+      for (const pin of pl.puppetPins) {
+        const [wx2, wy2] = matApply(M, pin.dx - cw/2, pin.dy - ch/2);
+        const [sx2, sy2] = compToScreen(wx2, wy2);
+        if (Math.hypot(sx-sx2, sy-sy2) < 10) {
+          startDrag(e, {
+            move(ev) {
+              const [mwx, mwy] = screenToComp(ev.clientX - rect.left, ev.clientY - rect.top);
+              const invM = matInvert(M);
+              const [lx, ly] = matApply(invM, mwx, mwy);
+              pin.dx = lx + cw/2;
+              pin.dy = ly + ch/2;
+              App.emit("props");
+            },
+            up() { App.commit(); App.emit("project"); },
+          });
+          return;
+        }
+      }
+      // Add new pin: click in layer bounds
+      const invM = matInvert(M);
+      const [lx, ly] = matApply(invM, wx, wy);
+      const lox = lx + cw/2, loy = ly + ch/2;
+      if (lox >= 0 && lox <= cw && loy >= 0 && loy <= ch) {
+        App.commit();
+        pl.puppetPins.push({ id: uid(), ox: lox, oy: loy, dx: lox, dy: loy });
+        App.emit("project");
+        requestDraw();
+      }
+      return;
+    }
+
     // check for guide creation from rulers (near top/left edge)
     if (sx < RULER_W) { dragCreateGuide(e, "v"); return; }
     if (sy < RULER_W) { dragCreateGuide(e, "h"); return; }
@@ -350,6 +427,57 @@ const Viewport = (() => {
       const [wx, wy] = screenToComp(sx, sy);
       MotionSketch.recordPos(wx, wy);
       return;
+    }
+
+    // Bezier handle hit-test (only for motion paths on selected layer with anim keys)
+    const selLayer = App.selectedLayer();
+    if (selLayer && !e.altKey) {
+      const p2 = selLayer.props.position;
+      if (p2.anim && p2.keys.length >= 2) {
+        const selTimes2 = new Set(App.selectedKeys.filter(sk=>sk.p==="position").map(sk=>sk.key.t));
+        for (const k of p2.keys) {
+          if (!selTimes2.has(k.t)) continue;
+          const P = parentMatrix(selLayer, k.t);
+          // Check cpOut
+          if (k.cpOut) {
+            const [ohx, ohy] = matApply(P, k.cpOut[0], k.cpOut[1]);
+            const [osx, osy] = compToScreen(ohx, ohy);
+            if (Math.hypot(sx-osx, sy-osy) < 9) {
+              e.preventDefault();
+              startDrag(e, {
+                move(ev) {
+                  const [wx, wy] = screenToComp(ev.clientX - rect.left, ev.clientY - rect.top);
+                  const invP = matInvert(parentMatrix(selLayer, k.t));
+                  const [lx, ly] = matApply(invP, wx, wy);
+                  k.cpOut = [lx, ly];
+                  App.emit("props");
+                },
+                up() { App.commit(); App.emit("project"); },
+              });
+              return;
+            }
+          }
+          // Check cpIn
+          if (k.cpIn) {
+            const [ihx, ihy] = matApply(P, k.cpIn[0], k.cpIn[1]);
+            const [isx, isy] = compToScreen(ihx, ihy);
+            if (Math.hypot(sx-isx, sy-isy) < 9) {
+              e.preventDefault();
+              startDrag(e, {
+                move(ev) {
+                  const [wx, wy] = screenToComp(ev.clientX - rect.left, ev.clientY - rect.top);
+                  const invP = matInvert(parentMatrix(selLayer, k.t));
+                  const [lx, ly] = matApply(invP, wx, wy);
+                  k.cpIn = [lx, ly];
+                  App.emit("props");
+                },
+                up() { App.commit(); App.emit("project"); },
+              });
+              return;
+            }
+          }
+        }
+      }
     }
 
     const mk = motionKeyHit(sx, sy);
@@ -700,10 +828,42 @@ const Viewport = (() => {
     });
     const penBtn = document.getElementById("btn-pen-tool");
     if (penBtn) penBtn.addEventListener("click", () => togglePenTool());
+    document.getElementById("btn-puppet-tool")?.addEventListener("click", () => {
+      App.tool = App.tool === "puppet" ? "pointer" : "puppet";
+      draw();
+    });
+    // dblclick to toggle bezier handles on motion path keyframe dots
+    canvas.addEventListener("dblclick", ev => {
+      if (penMode) return;
+      const rect2 = canvas.getBoundingClientRect();
+      const cx = ev.clientX - rect2.left, cy = ev.clientY - rect2.top;
+      const layer = App.selectedLayer();
+      if (!layer) return;
+      const p = layer.props.position;
+      if (!p.anim || p.keys.length < 2) return;
+      p.keys.forEach(k => {
+        const P = parentMatrix(layer, k.t);
+        const [wx, wy] = matApply(P, k.v[0], k.v[1]);
+        const [sx, sy] = compToScreen(wx, wy);
+        if (Math.hypot(cx-sx, cy-sy) < 8) {
+          App.commit();
+          if (k.cpOut) { delete k.cpOut; delete k.cpIn; }
+          else {
+            // Add smooth auto-handles: 1/3 of the distance to adjacent keyframe
+            const ki = p.keys.indexOf(k);
+            const prev = p.keys[ki-1], next = p.keys[ki+1];
+            if (next) k.cpOut = [k.v[0]+(next.v[0]-k.v[0])/3, k.v[1]+(next.v[1]-k.v[1])/3];
+            if (prev) k.cpIn  = [k.v[0]+(prev.v[0]-k.v[0])/3, k.v[1]+(prev.v[1]-k.v[1])/3];
+          }
+          App.emit("project");
+        }
+      });
+    });
     // Escape key cancels pen tool
     document.addEventListener("keydown", ev => {
       if (penMode && ev.key === "Escape") { penPoints = []; penMode = false; canvas.style.cursor = ""; if (penBtn) penBtn.classList.remove("active"); requestDraw(); }
       if (penMode && ev.key === "Enter" && penPoints.length >= 2) finalizePenPath(true);
+      if ((ev.key === "p" || ev.key === "P") && !ev.metaKey && !ev.ctrlKey) { App.tool = App.tool === "puppet" ? "pointer" : "puppet"; draw(); }
     });
     document.getElementById("quality-select").addEventListener("change", e => {
       setQuality(parseFloat(e.target.value));
@@ -742,6 +902,35 @@ const Viewport = (() => {
   }
 
   function currentScale() { return view.scale; }
+
+  /* ── puppet pin overlay ── */
+  function drawPuppetPins() {
+    if (App.tool !== "puppet") return;
+    const pl = App.selectedLayer();
+    if (!pl || !pl.puppetPins) return;
+    const M = worldMatrix(pl, App.time);
+    const [cw, ch] = contentSize(pl);
+    pl.puppetPins.forEach(pin => {
+      // pin is in layer-local coords (0,0 = top-left of content)
+      const [wx, wy] = matApply(M, pin.ox - cw/2, pin.oy - ch/2);
+      const [sx, sy] = compToScreen(wx, wy);
+      const [wx2, wy2] = matApply(M, pin.dx - cw/2, pin.dy - ch/2);
+      const [sx2, sy2] = compToScreen(wx2, wy2);
+      // Draw line from original to deformed position
+      if (sx2 !== sx || sy2 !== sy) {
+        ctx.save(); ctx.strokeStyle="rgba(255,180,50,0.5)"; ctx.lineWidth=1;
+        ctx.setLineDash([3,3]);
+        ctx.beginPath(); ctx.moveTo(sx,sy); ctx.lineTo(sx2,sy2); ctx.stroke();
+        ctx.setLineDash([]); ctx.restore();
+      }
+      // Draw pin circle at deformed position
+      ctx.save();
+      ctx.beginPath(); ctx.arc(sx2,sy2,7,0,Math.PI*2);
+      ctx.fillStyle="#ffb432"; ctx.fill();
+      ctx.strokeStyle="#fff"; ctx.lineWidth=1.5; ctx.stroke();
+      ctx.restore();
+    });
+  }
 
   /* ── pen tool ── */
   let penMode = false;
