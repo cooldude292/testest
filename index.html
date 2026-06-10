@@ -81,9 +81,10 @@
     <button class="btn ghost" id="btn-script-editor" title="Script editor (JS REPL)">
       <svg viewBox="0 0 16 16" width="13" height="13" style="margin-right:5px"><path d="M4 6l-3 2 3 2M12 6l3 2-3 2M8.5 3l-1 10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>Script
     </button>
-    <button class="btn ghost" id="btn-desktop" title="Download desktop Electron app">
-      <svg viewBox="0 0 16 16" width="13" height="13" style="margin-right:5px"><path d="M2.5 10.5v2a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-2M8 2.5v7M5 7l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>Desktop
-    </button>
+    <button class="btn desktop-download-btn" id="btn-desktop" title="Download Lumen Desktop — unlock 500+ effects, native codecs, FFmpeg export">
+  <svg viewBox="0 0 16 16" width="12" height="12" style="margin-right:5px;flex-shrink:0"><path d="M8 1v9M4.5 7l3.5 3.5L11.5 7M2 13h12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+  Desktop App
+</button>
     <button class="btn ghost" id="btn-palette" title="Command palette (⌘K)">
       <svg viewBox="0 0 16 16" width="13" height="13" style="margin-right:5px"><path d="M7 2.5 3 8h4l-1 5.5L11 7H7l1-4.5Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>⌘K
     </button>
@@ -521,6 +522,7 @@
 window.Muxer = null;
 </script>
 <script src="https://cdn.jsdelivr.net/npm/mp4-muxer@4/build/mp4-muxer.js" onerror="console.warn('mp4-muxer CDN unavailable')" onload="window.Muxer = window['mp4-muxer'] || window.Muxer || null"></script>
+<script src="js/effects-catalog.js" defer></script>
 <script src="js/core.js"></script>
 <script src="js/renderer.js"></script>
 <script src="js/timeline.js"></script>
