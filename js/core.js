@@ -83,6 +83,15 @@ function rawEval(p, t) {
   const a = keys[i], b = keys[i + 1];
   if (a.ease === "hold") return a.v;
   const span = b.t - a.t, u = span > 0 ? (t - a.t) / span : 1;
+  // Bezier path interpolation for vector props (position) with tangent handles
+  if (Array.isArray(a.v) && (a.cpOut || b.cpIn)) {
+    const ease = a.ease === "hold" ? 0 : (Easing[a.ease] || Easing.linear)(u);
+    const p0 = a.v, p1 = (a.cpOut && a.cpOut.length) ? a.cpOut : a.v;
+    const p2 = (b.cpIn && b.cpIn.length)  ? b.cpIn  : b.v, p3 = b.v;
+    const c0 = (1-ease)*(1-ease)*(1-ease), c1 = 3*(1-ease)*(1-ease)*ease;
+    const c2 = 3*(1-ease)*ease*ease,       c3 = ease*ease*ease;
+    return p0.map((_, ci) => c0*p0[ci] + c1*p1[ci] + c2*p2[ci] + c3*p3[ci]);
+  }
   return mix(a.v, b.v, (Easing[a.ease] || Easing.linear)(u));
 }
 
@@ -224,10 +233,10 @@ const BLEND_MODES = [
   ["color","Color"],["luminosity","Luminosity"],
 ];
 const MATTE_MODES = [["none","No matte"],["alpha","Alpha matte"],["alpha-inv","Alpha inverted"],["luma","Luma matte"],["luma-inv","Luma inverted"]];
-const LAYER_COLORS = { solid:"#5e6ad2",text:"#26b5ce",shape:"#4cb782",image:"#d2995e",video:"#b75ed2",adjust:"#8a8f98",nullobj:"#5e636e",audio:"#cea04c",comp:"#e0639d" };
-const LAYER_BAR = { solid:["#272b45","#3c4474"],text:["#16323a","#1f5564"],shape:["#19332a","#27574a"],image:["#3a2d1c","#5e4a2c"],video:["#33203a","#56335e"],adjust:["#26282d","#3a3d44"],nullobj:["#1f2023","#33363c"],audio:["#363017","#5c5226"],comp:["#3a1f2d","#5e3349"] };
+const LAYER_COLORS = { solid:"#5e6ad2",text:"#26b5ce",shape:"#4cb782",image:"#d2995e",video:"#b75ed2",adjust:"#8a8f98",nullobj:"#5e636e",audio:"#cea04c",comp:"#e0639d",camera:"#e0a030",light:"#f0e050" };
+const LAYER_BAR = { solid:["#272b45","#3c4474"],text:["#16323a","#1f5564"],shape:["#19332a","#27574a"],image:["#3a2d1c","#5e4a2c"],video:["#33203a","#56335e"],adjust:["#26282d","#3a3d44"],nullobj:["#1f2023","#33363c"],audio:["#363017","#5c5226"],comp:["#3a1f2d","#5e3349"],camera:["#3a2a00","#5e4800"],light:["#3a3800","#5c5800"] };
 const LABEL_COLORS = ["#5e6ad2","#26b5ce","#4cb782","#d2995e","#b75ed2","#eb5757","#e0639d","#cea04c"];
-const TYPE_NAMES = { solid:"Solid",text:"Text",shape:"Shape",image:"Image",video:"Video",adjust:"Adjustment",nullobj:"Null",audio:"Audio",comp:"Comp" };
+const TYPE_NAMES = { solid:"Solid",text:"Text",shape:"Shape",image:"Image",video:"Video",adjust:"Adjustment",nullobj:"Null",audio:"Audio",comp:"Comp",camera:"Camera",light:"Light" };
 
 /* ─── App state ──────────────────────────────────────────────────── */
 const App = {
@@ -364,10 +373,12 @@ function makeLayer(type, opts = {}) {
       rotation: animProp(0),
       rotationX: animProp(0),
       rotationY: animProp(0),
+      positionZ: animProp(0),
       opacity: animProp(100),
       anchor: animProp([0, 0]),
     },
     data: {},
+    puppetPins: [],
   };
   switch (type) {
     case "solid":
@@ -385,6 +396,12 @@ function makeLayer(type, opts = {}) {
     case "audio": base.data = { assetId: opts.assetId || null, volume: 100, eqLow: 0, eqMid: 0, eqHigh: 0 }; break;
     case "comp": base.data = { compId: opts.compId || null }; break;
     case "adjust": case "nullobj": base.data = {}; break;
+    case "camera":
+      base.data = { fov: 50, zoom: 1 };
+      break;
+    case "light":
+      base.data = { lightType: "point", intensity: 100, color: "#ffffff", angle: 135, softness: 50 };
+      break;
   }
   Object.assign(base.data, opts.data || {});
   return base;
@@ -714,6 +731,8 @@ function migrateLayer(l) {
   l.timeRemap = l.timeRemap ?? null;
   if (!l.props.rotationX) l.props.rotationX = animProp(0);
   if (!l.props.rotationY) l.props.rotationY = animProp(0);
+  if (!l.props.positionZ) l.props.positionZ = animProp(0);
+  l.puppetPins = l.puppetPins || [];
   if (l.type === "audio") { l.data.eqLow = l.data.eqLow ?? 0; l.data.eqMid = l.data.eqMid ?? 0; l.data.eqHigh = l.data.eqHigh ?? 0; }
   if (l.type === "text" && !l.data.animators) l.data.animators = [];
   if (l.type === "shape") {

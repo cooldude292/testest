@@ -314,6 +314,54 @@ const Renderer = (() => {
     (App.project.assets||[]).forEach(a => { if ((a.type==="video"||a.type==="audio")&&a.el&&!a.el.paused) a.el.pause(); });
   }
 
+  function drawWarpedTri(ctx, src, s0, s1, s2, d0, d1, d2) {
+    const [sx0,sy0]=s0,[sx1,sy1]=s1,[sx2,sy2]=s2;
+    const [dx0,dy0]=d0,[dx1,dy1]=d1,[dx2,dy2]=d2;
+    const det=(sx1-sx0)*(sy2-sy0)-(sx2-sx0)*(sy1-sy0);
+    if (Math.abs(det)<0.0001) return;
+    const ma=((dx1-dx0)*(sy2-sy0)-(dx2-dx0)*(sy1-sy0))/det;
+    const mc=((dx2-dx0)*(sx1-sx0)-(dx1-dx0)*(sx2-sx0))/det;
+    const me=dx0-ma*sx0-mc*sy0;
+    const mb=((dy1-dy0)*(sy2-sy0)-(dy2-dy0)*(sy1-sy0))/det;
+    const md=((dy2-dy0)*(sx1-sx0)-(dy1-dy0)*(sx2-sx0))/det;
+    const mf=dy0-mb*sx0-md*sy0;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(dx0,dy0); ctx.lineTo(dx1,dy1); ctx.lineTo(dx2,dy2);
+    ctx.closePath(); ctx.clip();
+    ctx.setTransform(ma,mb,mc,md,me,mf);
+    ctx.drawImage(src,0,0);
+    ctx.restore();
+  }
+
+  function applyPuppetWarp(bctx, srcBuf, layer, W, H) {
+    const pins = layer.puppetPins;
+    if (!pins || !pins.length) { bctx.drawImage(srcBuf,0,0); return; }
+    const G=16;
+    const pts=[];
+    for (let gy=0;gy<=G;gy++) {
+      pts[gy]=[];
+      for (let gx=0;gx<=G;gx++) {
+        const ox=gx/G*W, oy=gy/G*H;
+        let dx=0,dy=0,wsum=0;
+        pins.forEach(pin=>{
+          const d2=(ox-pin.ox)*(ox-pin.ox)+(oy-pin.oy)*(oy-pin.oy);
+          const w=1/Math.max(1,d2);
+          dx+=(pin.dx-pin.ox)*w; dy+=(pin.dy-pin.oy)*w; wsum+=w;
+        });
+        pts[gy][gx]=wsum>0 ? [ox+dx/wsum, oy+dy/wsum] : [ox,oy];
+      }
+    }
+    for (let gy=0;gy<G;gy++) {
+      for (let gx=0;gx<G;gx++) {
+        const tl=pts[gy][gx],tr=pts[gy][gx+1],bl=pts[gy+1][gx],br=pts[gy+1][gx+1];
+        const sx=gx/G*W, sy=gy/G*H, sw=W/G, sh=H/G;
+        drawWarpedTri(bctx,srcBuf,[sx,sy],[sx+sw,sy],[sx,sy+sh],tl,tr,bl);
+        drawWarpedTri(bctx,srcBuf,[sx+sw,sy],[sx+sw,sy+sh],[sx,sy+sh],tr,br,bl);
+      }
+    }
+  }
+
   /* ── op effects ── */
   function applyOps(buf, bctx, pool, layer, t, q, opts) {
     const W = buf.width, H = buf.height;
@@ -638,6 +686,19 @@ const Renderer = (() => {
     }
     applyMasks(buf, bctx, pool, layer, t, q);
     applyOps(buf, bctx, pool, layer, t, q, opts);
+    // Puppet warp (after applyMasks and applyOps)
+    if (layer.puppetPins && layer.puppetPins.length) {
+      pool.aux2Ctx.save();
+      pool.aux2Ctx.setTransform(1,0,0,1,0,0);
+      pool.aux2Ctx.clearRect(0,0,W,H);
+      pool.aux2Ctx.drawImage(buf,0,0);
+      pool.aux2Ctx.restore();
+      bctx.save();
+      bctx.setTransform(1,0,0,1,0,0);
+      bctx.clearRect(0,0,W,H);
+      applyPuppetWarp(bctx, pool.aux2, layer, W, H);
+      bctx.restore();
+    }
     return buf;
   }
 
@@ -669,6 +730,16 @@ const Renderer = (() => {
     ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
     if (!comp.bgAlpha) { ctx.fillStyle=comp.bg; ctx.fillRect(0,0,W,H); }
     const layers=comp.layers;
+    // 3D camera + lights
+    const camLayer = layers.find(l => l.type==="camera" && isActive(l,t));
+    const cam = camLayer ? (() => {
+      const cp = evalProp(camLayer.props.position, t);
+      const cz = evalProp(camLayer.props.positionZ, t);
+      const fov = camLayer.data.fov || 50;
+      const focal = (H/2) / Math.tan(fov*Math.PI/360);
+      return { x:cp[0]*q, y:cp[1]*q, z:cz, focal };
+    })() : null;
+    const lightLayers = layers.filter(l => l.type==="light" && isActive(l,t));
     const soloSet=new Set(layers.filter(l=>l.solo).map(l=>l.id));
     const consumed=new Set();
     layers.forEach((l,i) => { if (l.matte!=="none"&&layers[i-1]) consumed.add(layers[i-1].id); });
@@ -705,9 +776,44 @@ const Renderer = (() => {
           btx.drawImage(mbuf,0,0); btx.restore();
         } else if (!layer.matte.endsWith("-inv")) continue;
       }
-      ctx.save(); ctx.globalAlpha=clamp(opacity/100,0,1); ctx.globalCompositeOperation=layer.blend||"source-over";
-      ctx.filter=filterString(layer,t); ctx.drawImage(buf,0,0); ctx.restore();
+      const s3d = cam && layer.props.positionZ ? (() => {
+        const lz = evalProp(layer.props.positionZ, t);
+        return cam.focal / Math.max(0.01, cam.focal + lz - cam.z);
+      })() : 1;
+      if (s3d <= 0) continue;
+      ctx.save();
+      ctx.globalAlpha = clamp(opacity/100,0,1);
+      ctx.globalCompositeOperation = layer.blend||"source-over";
+      ctx.filter = filterString(layer,t);
+      if (Math.abs(s3d-1) > 0.002) {
+        ctx.translate(cam.x, cam.y);
+        ctx.scale(s3d, s3d);
+        ctx.translate(-cam.x, -cam.y);
+      }
+      ctx.drawImage(buf,0,0);
+      ctx.restore();
     }
+    // Light effects
+    lightLayers.forEach(light => {
+      const li = light.data.intensity || 100;
+      const lc = light.data.color || "#ffffff";
+      if (light.data.lightType === "ambient") {
+        const boost = (li - 100) / 100;
+        if (Math.abs(boost) > 0.01) {
+          ctx.save(); ctx.globalCompositeOperation = boost>0 ? "screen" : "multiply";
+          ctx.globalAlpha = Math.abs(boost) * 0.4;
+          ctx.fillStyle = lc; ctx.fillRect(0,0,W,H); ctx.restore();
+        }
+      } else {
+        const lpos = evalProp(light.props.position, t);
+        const lx=lpos[0]*q, ly=lpos[1]*q, lr=Math.hypot(W,H)*0.8;
+        const g=ctx.createRadialGradient(lx,ly,0,lx,ly,lr);
+        g.addColorStop(0, lc + Math.round(clamp(li/100,0,1)*128).toString(16).padStart(2,"0"));
+        g.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.save(); ctx.globalCompositeOperation="overlay"; ctx.globalAlpha=0.4;
+        ctx.fillStyle=g; ctx.fillRect(0,0,W,H); ctx.restore();
+      }
+    });
     ctx.restore();
   }
 
