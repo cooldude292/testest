@@ -1,0 +1,30 @@
+{
+  "name": "lumen-desktop",
+  "productName": "Lumen",
+  "version": "1.0.0",
+  "description": "Lumen – Professional Video Editor",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0"
+  },
+  "devDependencies": {
+    "electron": "^28.3.3",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.lumen.editor",
+    "productName": "Lumen",
+    "directories": { "output": "dist", "buildResources": "assets" },
+    "extraResources": [{ "from": "../", "to": "app", "filter": ["*.html","*.css","js/**","assets/**"] }],
+    "mac": { "category": "public.app-category.video", "target": [{ "target": "dmg" }, { "target": "zip" }] },
+    "win": { "target": [{ "target": "nsis" }, { "target": "portable" }] },
+    "linux": { "target": [{ "target": "AppImage" }, { "target": "deb" }] }
+  }
+}
