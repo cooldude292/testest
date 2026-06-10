@@ -489,3 +489,106 @@ input[type="range"]:hover::-webkit-slider-thumb { background: var(--text); }
   transition: opacity 0.18s, transform 0.18s;
 }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ─── v2 additions ─────────────────────────────────────────────── */
+
+/* panel resizers */
+.resizer { flex-shrink: 0; z-index: 10; }
+.resizer.v { width: 5px; margin: 0 -2px; cursor: col-resize; }
+.resizer.h { height: 5px; margin: -2px 0; cursor: row-resize; }
+.resizer:hover { background: rgba(94, 106, 210, 0.35); }
+.panel.collapsed { display: none; }
+
+/* comp tabs */
+.comp-tabs { display: flex; align-items: center; gap: 3px; margin-right: 10px; max-width: 40%; overflow-x: auto; }
+.comp-tab {
+  height: 22px; padding: 0 10px; border-radius: 5px; font-size: 12px;
+  color: var(--text-3); white-space: nowrap; border: 1px solid transparent;
+}
+.comp-tab:hover { background: var(--hover); color: var(--text-2); }
+.comp-tab.active { background: var(--accent-dim); color: var(--text); border-color: rgba(94,106,210,0.4); }
+.comp-tab.add { padding: 0 8px; font-size: 14px; }
+
+/* timeline head must match the 34px ruler */
+.tl-left-head { height: 34px; gap: 6px; }
+.tl-search {
+  flex: 1; height: 22px; font-size: 11.5px; padding: 0 7px; min-width: 0;
+  background: var(--surface-2); border: 1px solid var(--border-soft);
+}
+.tl-search::placeholder { color: var(--text-3); }
+
+/* effect-group header rows */
+.tl-row.fxhead { height: 22px; background: rgba(94, 106, 210, 0.05); }
+.tl-prop-name.fx { color: var(--accent-bright); font-size: 11px; padding-left: 26px; }
+
+/* mini buttons on property rows (loop / wiggle / graph) */
+.tl-mini {
+  width: 17px; height: 17px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 3px; color: var(--text-3); font-size: 11px; flex-shrink: 0;
+}
+.tl-mini:hover { background: var(--hover); color: var(--text); }
+.tl-mini.on { color: var(--accent-bright); }
+.tl-mini svg { width: 11px; height: 11px; }
+
+/* audio waveform inside bars */
+.tl-wave { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.8; pointer-events: none; }
+
+/* clickable label chip */
+.btnchip { border: none; cursor: pointer; }
+.btnchip:hover { outline: 2px solid rgba(255, 255, 255, 0.25); }
+
+/* HUD extras */
+#viewport-hud { gap: 3px; }
+.hud-sep { width: 1px; height: 14px; background: var(--border); margin: 0 2px; }
+.hud-btn.active { background: var(--accent-dim); color: var(--accent-bright); }
+.hud-select {
+  height: 22px; font-size: 11px; padding: 0 18px 0 6px; border-radius: 4px;
+  background-color: transparent; border-color: transparent; color: var(--text-2);
+}
+.hud-fps { font-family: var(--mono); font-size: 10.5px; color: var(--green); min-width: 44px; text-align: right; padding-right: 2px; }
+.hud-fps:empty { min-width: 0; padding: 0; }
+
+/* transport extras */
+.speed-select {
+  height: 24px; font-size: 11px; padding: 0 18px 0 7px; border-radius: 5px;
+  background-color: transparent; border-color: transparent; color: var(--text-2); width: 62px;
+}
+.speed-select:hover { background-color: var(--hover); }
+.icon-btn.active { color: var(--accent-bright); background: var(--accent-dim); }
+input.timecode { width: 96px; }
+
+/* checkbox rows */
+.check-row {
+  display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-2);
+  cursor: pointer; padding: 3px 0; user-select: none;
+}
+.check-row input[type="checkbox"] { accent-color: var(--accent); width: 13px; height: 13px; cursor: pointer; }
+
+/* align buttons */
+.align-group { display: flex; gap: 4px; }
+.align-group .btn { flex: 1; padding: 0; font-size: 13px; }
+
+/* graph editor */
+.graph-modal { width: 780px; max-width: calc(100vw - 48px); }
+#graph-canvas {
+  width: 100%; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); display: block; cursor: crosshair;
+}
+.graph-hint { font-size: 11px; margin-top: 8px; }
+
+/* shortcuts modal */
+.shortcuts-modal { width: 620px; max-width: calc(100vw - 48px); }
+.shortcuts-body { display: flex; gap: 28px; padding-bottom: 16px; }
+.sc-col { flex: 1; }
+.sc-col h4 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em;
+  color: var(--text-3); margin: 12px 0 6px;
+}
+.sc-col h4:first-child { margin-top: 0; }
+.sc-col div { font-size: 12px; color: var(--text-2); padding: 2.5px 0; }
+kbd {
+  display: inline-block; min-width: 18px; padding: 1px 5px; margin-right: 7px;
+  background: var(--surface-3); border: 1px solid var(--border); border-bottom-width: 2px;
+  border-radius: 4px; font-family: var(--mono); font-size: 10.5px; color: var(--text);
+  text-align: center;
+}
