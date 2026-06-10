@@ -12,6 +12,7 @@ function makeSequence(name) {
     width: 1920, height: 1080, fps: 30, duration: 30,
     videoTracks: [makePrTrack("video","V1"), makePrTrack("video","V2"), makePrTrack("video","V3")],
     audioTracks: [makePrTrack("audio","A1"), makePrTrack("audio","A2")],
+    markers: [],
   };
 }
 
@@ -21,7 +22,7 @@ function makePrTrack(type, name) {
 
 function makePrClip(assetId, srcIn, srcOut) {
   const dur = srcOut - srcIn;
-  return { id: prUID(), assetId, seqStart: 0, seqEnd: dur, srcIn, srcOut, speed: 1, volume: 100, opacity: 100, transIn: null, transOut: null, color: null };
+  return { id: prUID(), assetId, seqStart: 0, seqEnd: dur, srcIn, srcOut, speed: 1, volume: 100, opacity: 100, transIn: null, transOut: null, color: null, title: null, grade: { temp:0, tint:0, exposure:0, contrast:0, highlights:0, shadows:0, whites:0, blacks:0, sat:0, vibrance:0 } };
 }
 
 /* ── PrState ────────────────────────────────────────────────────────── */
@@ -216,6 +217,62 @@ function prFmtTCFull(sec) {
   return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}:${String(f).padStart(2,'0')}`;
 }
 
+/* ── Color grade helper ─────────────────────────────────────────────── */
+
+function applyPrGrade(ctx, clip, W, H) {
+  const g = clip.grade;
+  if (!g) return;
+  const e = g.exposure||0, c = g.contrast||0, s = g.sat||0, t = g.temp||0;
+  const parts = [];
+  if (Math.abs(e) > 0.1) parts.push(`brightness(${100 + e*8}%)`);
+  if (Math.abs(c) > 0.5) parts.push(`contrast(${100 + c}%)`);
+  if (Math.abs(s) > 0.5) parts.push(`saturate(${100 + s}%)`);
+  if (Math.abs(t) > 0.5) parts.push(`hue-rotate(${t * 0.4}deg)`);
+  if (!parts.length) return;
+  // copy to offscreen, apply filter, draw back
+  const tmp = document.createElement("canvas"); tmp.width = W; tmp.height = H;
+  const tc = tmp.getContext("2d");
+  tc.drawImage(ctx.canvas, 0, 0, W, H, 0, 0, W, H);
+  ctx.filter = parts.join(" ");
+  ctx.clearRect(0, 0, W, H);
+  ctx.drawImage(tmp, 0, 0);
+  ctx.filter = "none";
+}
+
+/* ── Waveform cache ─────────────────────────────────────────────────── */
+
+const _waveformPeaks = new Map(); // assetId → Float32Array
+const _waveformPending = new Set();
+
+async function ensureWaveform(assetId) {
+  if (_waveformPeaks.has(assetId) || _waveformPending.has(assetId)) return;
+  _waveformPending.add(assetId);
+  try {
+    const asset = prAsset(assetId); if (!asset) return;
+    const blob = await (typeof MediaStore !== "undefined" ? MediaStore.get(assetId).catch(()=>null) : Promise.resolve(null));
+    if (!blob) return;
+    const ab = await blob.arrayBuffer();
+    const ac = new OfflineAudioContext(1, 44100, 44100);
+    const decoded = await ac.decodeAudioData(ab);
+    const data = decoded.getChannelData(0);
+    const BARS = 300;
+    const step = Math.max(1, Math.floor(data.length / BARS));
+    const peaks = new Float32Array(BARS);
+    for (let i = 0; i < BARS; i++) {
+      let max = 0;
+      const off = i * step;
+      for (let j = 0; j < step && off+j < data.length; j++) max = Math.max(max, Math.abs(data[off+j]));
+      peaks[i] = max;
+    }
+    _waveformPeaks.set(assetId, peaks);
+    PrTimeline.draw(); // redraw with waveform
+  } catch(e) {
+    // audio decode failed; leave without waveform
+  } finally {
+    _waveformPending.delete(assetId);
+  }
+}
+
 /* ── PrRenderer (frame renderer) ───────────────────────────────────── */
 
 const PrRenderer = (() => {
@@ -236,13 +293,13 @@ const PrRenderer = (() => {
             await new Promise(r => { vid.onseeked = r; setTimeout(r, 150); });
           }
         }
-        try { ctx.drawImage(vid, 0, 0, W, H); } catch(e) {}
+        try { ctx.drawImage(vid, 0, 0, W, H); applyPrGrade(ctx, clip, W, H); } catch(e) {}
       } else {
         ctx.fillStyle = "#111"; ctx.fillRect(0, 0, W, H);
       }
     } else if (asset.type === "image") {
       const img = await prGetImage(clip.assetId);
-      if (img) ctx.drawImage(img, 0, 0, W, H);
+      if (img) { ctx.drawImage(img, 0, 0, W, H); applyPrGrade(ctx, clip, W, H); }
     } else {
       ctx.fillStyle = "#1e1e26"; ctx.fillRect(0, 0, W, H);
     }
@@ -606,6 +663,82 @@ const PrAudio = (() => {
   return { sync, stop };
 })();
 
+/* ── PrLumetri (color grading panel) ───────────────────────────────── */
+
+const PrLumetri = (() => {
+  let _clip = null;
+  let _panel = null;
+
+  function show(clip) {
+    _clip = clip;
+    if (!_panel) _buildPanel();
+    _panel.hidden = false;
+    _refresh();
+  }
+  function hide() {
+    if (_panel) _panel.hidden = true;
+    _clip = null;
+  }
+
+  function _buildPanel() {
+    _panel = document.createElement("div");
+    _panel.id = "pr-lumetri-panel";
+    _panel.className = "pr-lumetri";
+    _panel.hidden = true;
+    _panel.innerHTML = `
+      <div class="pr-lumetri-head">
+        <span>Lumetri Color</span>
+        <button class="pr-lumetri-close" title="Close">✕</button>
+      </div>
+      <div class="pr-lumetri-body">
+        <div class="pr-lum-section">Basic Correction</div>
+        ${_slider("temp",   "Temperature", -100, 100)}
+        ${_slider("tint",   "Tint",        -100, 100)}
+        ${_slider("exposure","Exposure",   -10,  10, 0.1)}
+        ${_slider("contrast","Contrast",   -100, 100)}
+        <div class="pr-lum-section">Tone</div>
+        ${_slider("highlights","Highlights",-100,100)}
+        ${_slider("shadows",  "Shadows",   -100, 100)}
+        ${_slider("whites",   "Whites",    -100, 100)}
+        ${_slider("blacks",   "Blacks",    -100, 100)}
+        <div class="pr-lum-section">Creative</div>
+        ${_slider("sat",    "Saturation", -100, 100)}
+        ${_slider("vibrance","Vibrance",  -100, 100)}
+      </div>`;
+    // place inside #pr-tl-body as right column
+    const body = document.getElementById("pr-tl-body");
+    if (body) body.appendChild(_panel);
+    _panel.querySelector(".pr-lumetri-close").addEventListener("click", hide);
+    _panel.querySelectorAll("input[type=range]").forEach(inp => {
+      inp.addEventListener("input", () => {
+        if (!_clip) return;
+        _clip.grade[inp.dataset.key] = parseFloat(inp.value);
+        PrProgramMonitor.draw();
+        _panel.querySelector(`span[data-val="${inp.dataset.key}"]`).textContent = (+inp.value).toFixed(inp.dataset.key === "exposure" ? 1 : 0);
+      });
+    });
+  }
+
+  function _slider(key, label, min, max, step = 1) {
+    return `<div class="pr-lum-row">
+      <span class="pr-lum-label">${label}</span>
+      <input type="range" min="${min}" max="${max}" step="${step}" value="0" data-key="${key}">
+      <span class="pr-lum-val" data-val="${key}">0</span>
+    </div>`;
+  }
+
+  function _refresh() {
+    if (!_clip || !_panel) return;
+    const g = _clip.grade || {};
+    _panel.querySelectorAll("input[type=range]").forEach(inp => {
+      inp.value = g[inp.dataset.key] || 0;
+      _panel.querySelector(`span[data-val="${inp.dataset.key}"]`).textContent = (+inp.value).toFixed(inp.dataset.key === "exposure" ? 1 : 0);
+    });
+  }
+
+  return { show, hide };
+})();
+
 /* ── PrBins (project / bins panel) ─────────────────────────────────── */
 
 const PrBins = (() => {
@@ -866,22 +999,44 @@ const PrTimeline = (() => {
         ctx.lineWidth = sel ? 1.5 : 0.5;
         _rrect(cx + 1, y + 2, cw - 2, h - 4, 3); ctx.stroke();
 
-        // Label
-        const name = prAsset(clip.assetId)?.name || "Clip";
+        // Label (top-left corner)
+        const asset = prAsset(clip.assetId);
+        const name = asset?.name || "Clip";
         ctx.fillStyle = "rgba(255,255,255,0.82)"; ctx.font = "10px system-ui"; ctx.textAlign = "left";
         ctx.save(); ctx.beginPath(); ctx.rect(cx + 3, y + 2, cw - 6, h - 4); ctx.clip();
         ctx.fillText(name, cx + 5, y + 14); ctx.restore();
 
-        // Waveform stub for audio
+        // Waveform for audio tracks (real peaks if available, else stub)
         if (tr.type === "audio" && cw > 24) {
-          ctx.strokeStyle = "rgba(80,200,120,0.45)"; ctx.lineWidth = 1;
-          ctx.beginPath();
-          for (let px = 0; px < cw - 2; px += 2) {
-            const amp = (Math.sin(px * 0.4 + clip.id) * 0.35 + 0.2) * (h / 2 - 6);
-            ctx.moveTo(cx + 2 + px, y + h/2 - amp);
-            ctx.lineTo(cx + 2 + px, y + h/2 + amp);
+          const x1 = cx + 1, x2 = cx + cw - 1;
+          const ry = y + 2, rh = h - 4;
+          const peaks = _waveformPeaks.get(clip.assetId);
+          if (peaks) {
+            ctx.save();
+            ctx.strokeStyle = "rgba(76,183,130,0.8)";
+            ctx.lineWidth = 1;
+            const mid = ry + rh/2, amp = (rh/2 - 2);
+            for (let i = 0; i < peaks.length; i++) {
+              const px = Math.round(x1 + (i/peaks.length)*(x2-x1));
+              if (px < LABEL_W || px > cvs.width) continue;
+              const h2 = Math.max(1, peaks[i]*amp);
+              ctx.beginPath(); ctx.moveTo(px, mid-h2); ctx.lineTo(px, mid+h2); ctx.stroke();
+            }
+            ctx.restore();
+          } else {
+            // fallback stub + trigger async decode
+            ctx.strokeStyle = "rgba(80,200,120,0.45)"; ctx.lineWidth = 1;
+            ctx.beginPath();
+            for (let px = 0; px < cw - 2; px += 2) {
+              const amp = (Math.sin(px * 0.4 + clip.id) * 0.35 + 0.2) * (h / 2 - 6);
+              ctx.moveTo(cx + 2 + px, y + h/2 - amp);
+              ctx.lineTo(cx + 2 + px, y + h/2 + amp);
+            }
+            ctx.stroke();
+            if (asset && (asset.type === "audio" || asset.type === "video")) {
+              ensureWaveform(clip.assetId);
+            }
           }
-          ctx.stroke();
         }
 
         // Transition tints
@@ -892,6 +1047,19 @@ const PrTimeline = (() => {
         if (clip.transOut) {
           const tw = Math.min(clip.transOut.duration * pps, cw / 2);
           ctx.fillStyle = "rgba(240,200,40,0.35)"; ctx.fillRect(cx + cw - 1 - tw, y+2, tw, h-4);
+        }
+
+        // Clip name label (centered in clip body)
+        if (cw - 2 > 30) {
+          ctx.save();
+          ctx.font = "11px Inter, system-ui, sans-serif";
+          ctx.fillStyle = "rgba(255,255,255,0.85)";
+          ctx.textBaseline = "middle";
+          ctx.textAlign = "left";
+          ctx.beginPath(); ctx.rect(cx+1, y+1, cw-2, h-2); ctx.clip();
+          const cname = asset?.name || "Clip";
+          ctx.fillText(cname, cx + 6, y + h/2);
+          ctx.restore();
         }
       });
     });
@@ -942,6 +1110,20 @@ const PrTimeline = (() => {
     ctx.fillText(prFmtTC(PrState.playhead), x, 12);
   }
 
+  /* ── Snapping ────────────────────────────────────────────────────── */
+
+  function snapSec(sec, excludeClipId, snapRange = 8 / PrState.zoom) {
+    const seq = PrState.seq; if (!seq) return sec;
+    const candidates = [0, seq.duration, PrState.playhead];
+    seq.videoTracks.concat(seq.audioTracks).forEach(tr => {
+      tr.clips.forEach(c => {
+        if (c.id !== excludeClipId) { candidates.push(c.seqStart, c.seqEnd); }
+      });
+    });
+    const snap = candidates.find(t => Math.abs(t - sec) < snapRange);
+    return snap !== undefined ? snap : sec;
+  }
+
   /* ── Mouse ───────────────────────────────────────────────────────── */
 
   function _sec(cx) { return (cx - LABEL_W + PrState.scrollX) / PrState.zoom; }
@@ -976,6 +1158,7 @@ const PrTimeline = (() => {
     const clip = track.clips.find(c => sec >= c.seqStart && sec < c.seqEnd);
     if (!clip) {
       if (!e.shiftKey) PrState.selected.clear();
+      PrLumetri.hide();
       PrState.playhead = Math.max(0, sec);
       PrProgramMonitor.draw(); draw();
       drag = { type: "ph" };
@@ -984,6 +1167,7 @@ const PrTimeline = (() => {
 
     if (!e.shiftKey) PrState.selected.clear();
     PrState.selected.add(clip.id);
+    PrLumetri.show(clip);
 
     const x1 = LABEL_W + clip.seqStart * PrState.zoom - PrState.scrollX;
     const x2 = LABEL_W + clip.seqEnd   * PrState.zoom - PrState.scrollX;
@@ -1019,7 +1203,8 @@ const PrTimeline = (() => {
       const dSec = (mx - drag.startMx) / PrState.zoom;
       drag.items.forEach(item => {
         const dur = item.clip.seqEnd - item.clip.seqStart;
-        item.clip.seqStart = Math.max(0, item.orig + dSec);
+        const rawStart = Math.max(0, item.orig + dSec);
+        item.clip.seqStart = snapSec(rawStart, item.clip.id);
         item.clip.seqEnd   = item.clip.seqStart + dur;
       });
       PrState.refreshDuration(); draw();
@@ -1172,11 +1357,14 @@ const PrTimeline = (() => {
             const aClip = makePrClip(assetId, 0, dur);
             aClip.opacity = 100; // mark as audio-linked
             PrState.addClipToTrack(seq.audioTracks[0], aClip, sec);
+            ensureWaveform(assetId); // trigger waveform decode for linked audio
             draw();
           }
         }).catch(() => {});
       }
     }
+    // Trigger waveform loading for audio assets dropped directly
+    if (a.type === "audio") ensureWaveform(assetId);
     draw();
   }
 
@@ -1235,6 +1423,26 @@ function bindBtn(id, fn) {
 
 function initPremiere() {
   if (PrState.seqs.length === 0) PrState.newSequence("Sequence 01");
+
+  if (!document.getElementById("pr-lumetri-styles")) {
+    const s = document.createElement("style");
+    s.id = "pr-lumetri-styles";
+    s.textContent = `
+      #pr-tl-body { display:flex; }
+      #pr-tl-canvas { flex:1; min-width:0; }
+      #pr-lumetri-panel { width:210px; flex-shrink:0; background:var(--bg-2); border-left:1px solid var(--border); overflow-y:auto; font-size:12px; }
+      .pr-lumetri-head { display:flex; align-items:center; justify-content:space-between; padding:6px 10px; border-bottom:1px solid var(--border); font-weight:600; }
+      .pr-lumetri-close { background:none; border:none; color:var(--text-2); cursor:pointer; font-size:14px; padding:0 2px; }
+      .pr-lumetri-close:hover { color:var(--text-1); }
+      .pr-lumetri-body { padding:8px; }
+      .pr-lum-section { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:var(--text-3); margin:10px 0 4px; }
+      .pr-lum-row { display:flex; align-items:center; gap:4px; margin-bottom:4px; }
+      .pr-lum-label { width:74px; color:var(--text-2); flex-shrink:0; }
+      .pr-lum-row input[type=range] { flex:1; height:3px; accent-color:var(--accent); }
+      .pr-lum-val { width:28px; text-align:right; color:var(--text-3); }
+    `;
+    document.head.appendChild(s);
+  }
 
   PrSourceMonitor.init();
   PrProgramMonitor.init();
