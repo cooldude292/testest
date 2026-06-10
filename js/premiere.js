@@ -1,0 +1,1186 @@
+/* ─── Lumen — Premiere Pro "Edit" Tab ──────────────────────────────── */
+"use strict";
+
+/* ── Data model ─────────────────────────────────────────────────────── */
+
+let _prId = 9000;
+const prUID = () => ++_prId;
+
+function makeSequence(name) {
+  return {
+    id: prUID(), name: name || "Sequence 01",
+    width: 1920, height: 1080, fps: 30, duration: 30,
+    videoTracks: [makePrTrack("video","V1"), makePrTrack("video","V2"), makePrTrack("video","V3")],
+    audioTracks: [makePrTrack("audio","A1"), makePrTrack("audio","A2")],
+  };
+}
+
+function makePrTrack(type, name) {
+  return { id: prUID(), type, name, clips: [], mute: false, solo: false, locked: false, height: type === "video" ? 70 : 42 };
+}
+
+function makePrClip(assetId, srcIn, srcOut) {
+  const dur = srcOut - srcIn;
+  return { id: prUID(), assetId, seqStart: 0, seqEnd: dur, srcIn, srcOut, speed: 1, volume: 100, opacity: 100, transIn: null, transOut: null, color: null };
+}
+
+/* ── PrState ────────────────────────────────────────────────────────── */
+
+const PrState = (() => {
+  const sequences = [];
+  let activeSeq = null;
+  let _ph = 0, _playing = false, _raf = null, _lastTs = 0;
+  let _tool = "select";
+  let _zoom = 100;
+  let _scrollX = 0, _scrollY = 0;
+  const selected = new Set();
+  let srcAssetId = null, srcIn = 0, srcOut = 5, srcPh = 0;
+
+  function newSequence(name) {
+    const s = makeSequence(name);
+    sequences.push(s);
+    activeSeq = s;
+    return s;
+  }
+
+  function setSeq(s) { activeSeq = s; selected.clear(); }
+
+  function addClipToTrack(trackRef, clip, startSec) {
+    clip.seqStart = startSec;
+    clip.seqEnd = startSec + (clip.srcOut - clip.srcIn) / clip.speed;
+    trackRef.clips.push(clip);
+    trackRef.clips.sort((a, b) => a.seqStart - b.seqStart);
+    _refreshDuration();
+  }
+
+  function _refreshDuration() {
+    if (!activeSeq) return;
+    let end = 10;
+    allTracks().forEach(tr => tr.clips.forEach(c => { if (c.seqEnd > end) end = c.seqEnd; }));
+    activeSeq.duration = end + 5;
+  }
+
+  function allTracks() {
+    if (!activeSeq) return [];
+    return [...activeSeq.videoTracks, ...activeSeq.audioTracks];
+  }
+
+  function removeClip(id) {
+    allTracks().forEach(tr => {
+      const i = tr.clips.findIndex(c => c.id === id);
+      if (i >= 0) tr.clips.splice(i, 1);
+    });
+    selected.delete(id);
+    _refreshDuration();
+  }
+
+  function splitAt(clipId, sec) {
+    for (const tr of allTracks()) {
+      const clip = tr.clips.find(c => c.id === clipId);
+      if (!clip) continue;
+      if (sec <= clip.seqStart || sec >= clip.seqEnd) return;
+      const ratio = (sec - clip.seqStart) / (clip.seqEnd - clip.seqStart);
+      const srcMid = clip.srcIn + (clip.srcOut - clip.srcIn) * ratio;
+      const right = { ...clip, id: prUID(), seqStart: sec, srcIn: srcMid, transIn: null };
+      clip.seqEnd = sec;
+      clip.srcOut = srcMid;
+      clip.transOut = null;
+      tr.clips.push(right);
+      tr.clips.sort((a, b) => a.seqStart - b.seqStart);
+      return;
+    }
+  }
+
+  function razorAt(sec) {
+    allTracks().forEach(tr => {
+      const clip = tr.clips.find(c => sec > c.seqStart && sec < c.seqEnd);
+      if (clip) splitAt(clip.id, sec);
+    });
+  }
+
+  function togglePlay() {
+    if (_playing) stopPlay(); else startPlay();
+    _updatePlayBtn();
+  }
+
+  function startPlay() {
+    if (_playing) return;
+    _playing = true;
+    _lastTs = performance.now();
+    function tick(ts) {
+      if (!_playing) return;
+      const dt = (ts - _lastTs) / 1000;
+      _lastTs = ts;
+      _ph = Math.min(_ph + dt, activeSeq ? activeSeq.duration : 60);
+      if (activeSeq && _ph >= activeSeq.duration) _ph = 0;
+      PrProgramMonitor.draw();
+      PrTimeline.drawPlayhead();
+      _raf = requestAnimationFrame(tick);
+    }
+    _raf = requestAnimationFrame(tick);
+  }
+
+  function stopPlay() {
+    _playing = false;
+    if (_raf) { cancelAnimationFrame(_raf); _raf = null; }
+  }
+
+  function _updatePlayBtn() {
+    const btn = document.getElementById("pr-play-btn");
+    if (!btn) return;
+    btn.innerHTML = _playing
+      ? `<svg viewBox="0 0 16 16"><rect x="3.5" y="3" width="3.2" height="10" rx="1" fill="currentColor"/><rect x="9.3" y="3" width="3.2" height="10" rx="1" fill="currentColor"/></svg>`
+      : `<svg viewBox="0 0 16 16"><path d="M4.5 3.1v9.8c0 .62.68 1 1.2.65l7.4-4.9a.78.78 0 0 0 0-1.3l-7.4-4.9A.78.78 0 0 0 4.5 3.1Z" fill="currentColor"/></svg>`;
+  }
+
+  return {
+    get seq() { return activeSeq; },
+    get seqs() { return sequences; },
+    get playhead() { return _ph; },
+    set playhead(v) { _ph = Math.max(0, v); },
+    get playing() { return _playing; },
+    get tool() { return _tool; },
+    set tool(v) { _tool = v; },
+    get zoom() { return _zoom; },
+    set zoom(v) { _zoom = Math.max(8, Math.min(3000, v)); },
+    get scrollX() { return _scrollX; },
+    set scrollX(v) { _scrollX = Math.max(0, v); },
+    get scrollY() { return _scrollY; },
+    set scrollY(v) { _scrollY = v; },
+    get selected() { return selected; },
+    get srcAssetId() { return srcAssetId; },
+    set srcAssetId(v) { srcAssetId = v; },
+    get srcIn() { return srcIn; },
+    set srcIn(v) { srcIn = v; },
+    get srcOut() { return srcOut; },
+    set srcOut(v) { srcOut = v; },
+    get srcPlayhead() { return srcPh; },
+    set srcPlayhead(v) { srcPh = v; },
+    newSequence, setSeq, allTracks, addClipToTrack, removeClip, splitAt, razorAt,
+    refreshDuration: _refreshDuration,
+    togglePlay, startPlay, stopPlay,
+  };
+})();
+
+/* ── Asset & video helpers ──────────────────────────────────────────── */
+
+function prAsset(id) {
+  return (typeof App !== "undefined" && App.project?.assets || []).find(a => a.id === id) || null;
+}
+function prAllAssets() {
+  return (typeof App !== "undefined" && App.project?.assets || []);
+}
+
+const _vidPool = new Map();
+async function prGetVideo(assetId) {
+  if (_vidPool.has(assetId)) return _vidPool.get(assetId);
+  const asset = prAsset(assetId);
+  if (!asset) return null;
+  let url = asset.url || null;
+  if (!url && typeof MediaStore !== "undefined") {
+    const blob = await MediaStore.get(assetId).catch(() => null);
+    if (blob) url = URL.createObjectURL(blob);
+  }
+  if (!url) return null;
+  const v = document.createElement("video");
+  v.src = url; v.muted = true; v.preload = "auto"; v.crossOrigin = "anonymous";
+  await new Promise(r => { v.onloadedmetadata = r; v.onerror = r; setTimeout(r, 3000); });
+  _vidPool.set(assetId, v);
+  return v;
+}
+
+const _imgCache = new Map();
+async function prGetImage(assetId) {
+  if (_imgCache.has(assetId)) return _imgCache.get(assetId);
+  const asset = prAsset(assetId);
+  if (!asset) return null;
+  let url = asset.url || null;
+  if (!url && typeof MediaStore !== "undefined") {
+    const blob = await MediaStore.get(assetId).catch(() => null);
+    if (blob) url = URL.createObjectURL(blob);
+  }
+  if (!url) return null;
+  const img = new Image(); img.crossOrigin = "anonymous"; img.src = url;
+  await new Promise(r => { img.onload = r; img.onerror = r; });
+  _imgCache.set(assetId, img);
+  return img;
+}
+
+function prFmtTC(sec) {
+  const m = Math.floor((sec % 3600) / 60), s = Math.floor(sec % 60), f = Math.floor((sec % 1) * 30);
+  return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}:${String(f).padStart(2,'0')}`;
+}
+function prFmtTCFull(sec) {
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.floor(sec % 60), f = Math.floor((sec % 1) * 30);
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}:${String(f).padStart(2,'0')}`;
+}
+
+/* ── PrRenderer (frame renderer) ───────────────────────────────────── */
+
+const PrRenderer = (() => {
+  async function drawClip(ctx, clip, clipT, W, H) {
+    const asset = prAsset(clip.assetId);
+    if (!asset) {
+      ctx.fillStyle = clip.color || "#2a2a3a";
+      ctx.fillRect(0, 0, W, H);
+      return;
+    }
+    if (asset.type === "video") {
+      const vid = _vidPool.get(clip.assetId);
+      if (vid && !isNaN(vid.duration) && vid.duration > 0) {
+        const t = Math.max(0, Math.min(vid.duration - 0.001, clipT));
+        if (Math.abs(vid.currentTime - t) > 0.1) {
+          vid.currentTime = t;
+          await new Promise(r => { vid.onseeked = r; setTimeout(r, 120); });
+        }
+        ctx.drawImage(vid, 0, 0, W, H);
+      } else {
+        ctx.fillStyle = "#111"; ctx.fillRect(0, 0, W, H);
+      }
+    } else if (asset.type === "image") {
+      const img = await prGetImage(clip.assetId);
+      if (img) ctx.drawImage(img, 0, 0, W, H);
+    } else {
+      ctx.fillStyle = "#1e1e26"; ctx.fillRect(0, 0, W, H);
+    }
+  }
+
+  async function renderFrame(ctx, seq, t) {
+    const W = ctx.canvas.width, H = ctx.canvas.height;
+    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
+    if (!seq) return;
+    for (let ti = seq.videoTracks.length - 1; ti >= 0; ti--) {
+      const tr = seq.videoTracks[ti];
+      if (tr.mute) continue;
+      for (const clip of tr.clips) {
+        if (t < clip.seqStart || t >= clip.seqEnd) continue;
+        const clipT = clip.srcIn + (t - clip.seqStart) * clip.speed;
+        let alpha = clip.opacity / 100;
+        if (clip.transIn && t < clip.seqStart + clip.transIn.duration)
+          alpha *= (t - clip.seqStart) / clip.transIn.duration;
+        if (clip.transOut && t > clip.seqEnd - clip.transOut.duration)
+          alpha *= (clip.seqEnd - t) / clip.transOut.duration;
+        ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+        await drawClip(ctx, clip, clipT, W, H);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  return { renderFrame };
+})();
+
+/* ── PrSourceMonitor ────────────────────────────────────────────────── */
+
+const PrSourceMonitor = (() => {
+  let cvs, ctx, scrub = false, playing = false, raf = null, lastTs = 0;
+
+  function init() {
+    cvs = document.getElementById("pr-src-canvas");
+    if (!cvs) return;
+    ctx = cvs.getContext("2d");
+    resizeCanvas();
+    window.addEventListener("resize", resizeCanvas);
+    cvs.addEventListener("mousedown", onDown);
+    bindBtn("pr-src-set-in",  () => { PrState.srcIn = PrState.srcPlayhead; draw(); });
+    bindBtn("pr-src-set-out", () => { PrState.srcOut = PrState.srcPlayhead; draw(); });
+    bindBtn("pr-src-play",    togglePlay);
+    bindBtn("pr-src-insert",  insertClip);
+    bindBtn("pr-src-overwrite", overwriteClip);
+    draw();
+  }
+
+  function resizeCanvas() {
+    if (!cvs) return;
+    const p = cvs.parentElement;
+    if (!p) return;
+    cvs.width  = p.clientWidth  || 400;
+    cvs.height = (p.clientHeight || 300) - 36;
+  }
+
+  function loadAsset(id) {
+    PrState.srcAssetId = id;
+    const a = prAsset(id);
+    if (!a) return;
+    PrState.srcIn = 0; PrState.srcOut = a.duration || 5; PrState.srcPlayhead = 0;
+    if (a.type === "video") prGetVideo(id).then(() => draw()).catch(() => {});
+    const el = document.getElementById("pr-src-name");
+    if (el) el.textContent = a.name;
+    draw();
+  }
+
+  async function draw() {
+    if (!ctx || !cvs) return;
+    const W = cvs.width, H = cvs.height;
+    ctx.clearRect(0, 0, W, H);
+    const a = prAsset(PrState.srcAssetId);
+    if (!a) {
+      ctx.fillStyle = "#111"; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "#444"; ctx.font = "13px system-ui"; ctx.textAlign = "center";
+      ctx.fillText("No clip loaded — click an asset", W / 2, H / 2);
+      return;
+    }
+    if (a.type === "video") {
+      const vid = _vidPool.get(PrState.srcAssetId);
+      if (vid && !isNaN(vid.duration)) {
+        const t = Math.min(PrState.srcPlayhead, vid.duration - 0.001);
+        if (Math.abs(vid.currentTime - t) > 0.08) {
+          vid.currentTime = t;
+          await new Promise(r => { vid.onseeked = r; setTimeout(r, 100); });
+        }
+        ctx.drawImage(vid, 0, 0, W, H);
+      }
+    } else if (a.type === "image") {
+      const img = await prGetImage(PrState.srcAssetId);
+      if (img) ctx.drawImage(img, 0, 0, W, H);
+    } else {
+      ctx.fillStyle = "#1a1a26"; ctx.fillRect(0, 0, W, H);
+    }
+    _drawScrub(W, H, a.duration || 10);
+    _drawTC(W, H);
+  }
+
+  function _drawScrub(W, H, dur) {
+    const by = H - 14, bh = 5;
+    ctx.fillStyle = "#333"; ctx.fillRect(6, by, W - 12, bh);
+    const ix = 6 + (PrState.srcIn / dur) * (W - 12);
+    const ox = 6 + (PrState.srcOut / dur) * (W - 12);
+    ctx.fillStyle = "#5e6ad2"; ctx.fillRect(ix, by, ox - ix, bh);
+    const px = 6 + (PrState.srcPlayhead / dur) * (W - 12);
+    ctx.fillStyle = "#fff"; ctx.fillRect(px - 1, by - 3, 2, bh + 6);
+  }
+
+  function _drawTC(W, H) {
+    ctx.fillStyle = "rgba(0,0,0,.65)"; ctx.fillRect(0, H - 16, 85, 16);
+    ctx.fillStyle = "#ccc"; ctx.font = "10px monospace"; ctx.textAlign = "left";
+    ctx.fillText(prFmtTC(PrState.srcPlayhead), 5, H - 4);
+  }
+
+  function onDown(e) {
+    scrub = true; moveScrub(e);
+    const mm = e2 => { if (scrub) moveScrub(e2); };
+    const mu = () => { scrub = false; document.removeEventListener("mousemove", mm); document.removeEventListener("mouseup", mu); };
+    document.addEventListener("mousemove", mm);
+    document.addEventListener("mouseup", mu);
+  }
+
+  function moveScrub(e) {
+    const a = prAsset(PrState.srcAssetId); if (!a) return;
+    const r = cvs.getBoundingClientRect();
+    const nx = (e.clientX - r.left) / r.width * cvs.width;
+    const dur = a.duration || 10;
+    PrState.srcPlayhead = Math.max(0, Math.min(dur, ((nx - 6) / (cvs.width - 12)) * dur));
+    draw();
+  }
+
+  function togglePlay() {
+    playing = !playing;
+    const btn = document.getElementById("pr-src-play");
+    if (btn) btn.textContent = playing ? "⏸" : "▶";
+    if (playing) {
+      lastTs = performance.now();
+      function tick(ts) {
+        if (!playing) return;
+        const dt = (ts - lastTs) / 1000; lastTs = ts;
+        const a = prAsset(PrState.srcAssetId);
+        PrState.srcPlayhead = Math.min(PrState.srcPlayhead + dt, PrState.srcOut);
+        if (PrState.srcPlayhead >= PrState.srcOut) PrState.srcPlayhead = PrState.srcIn;
+        draw();
+        raf = requestAnimationFrame(tick);
+      }
+      raf = requestAnimationFrame(tick);
+    } else if (raf) { cancelAnimationFrame(raf); }
+  }
+
+  function insertClip() {
+    if (!PrState.srcAssetId || !PrState.seq) return;
+    const seq = PrState.seq;
+    const track = seq.videoTracks[0]; if (!track) return;
+    const clip = makePrClip(PrState.srcAssetId, PrState.srcIn, PrState.srcOut);
+    // Find end of last clip in V1 for insert
+    const insertAt = PrState.playhead;
+    // Shift clips after insertAt
+    const dur = clip.srcOut - clip.srcIn;
+    track.clips.filter(c => c.seqStart >= insertAt).forEach(c => { c.seqStart += dur; c.seqEnd += dur; });
+    // Do same for A1
+    if (seq.audioTracks[0]) {
+      seq.audioTracks[0].clips.filter(c => c.seqStart >= insertAt).forEach(c => { c.seqStart += dur; c.seqEnd += dur; });
+    }
+    PrState.addClipToTrack(track, clip, insertAt);
+    PrTimeline.draw(); PrBins.refresh();
+  }
+
+  function overwriteClip() {
+    if (!PrState.srcAssetId || !PrState.seq) return;
+    const seq = PrState.seq;
+    const track = seq.videoTracks[0]; if (!track) return;
+    const clip = makePrClip(PrState.srcAssetId, PrState.srcIn, PrState.srcOut);
+    const dur = clip.srcOut - clip.srcIn;
+    const end = PrState.playhead + dur;
+    track.clips = track.clips.filter(c => c.seqEnd <= PrState.playhead || c.seqStart >= end);
+    PrState.addClipToTrack(track, clip, PrState.playhead);
+    PrTimeline.draw();
+  }
+
+  return { init, loadAsset, draw, resizeCanvas };
+})();
+
+/* ── PrProgramMonitor ───────────────────────────────────────────────── */
+
+const PrProgramMonitor = (() => {
+  let cvs, ctx, scrub = false;
+
+  function init() {
+    cvs = document.getElementById("pr-prog-canvas");
+    if (!cvs) return;
+    ctx = cvs.getContext("2d");
+    resizeCanvas();
+    window.addEventListener("resize", resizeCanvas);
+    cvs.addEventListener("mousedown", onDown);
+    bindBtn("pr-play-btn",  () => PrState.togglePlay());
+    bindBtn("pr-go-start",  () => { PrState.playhead = 0; draw(); PrTimeline.drawPlayhead(); });
+    bindBtn("pr-go-end",    () => { PrState.playhead = PrState.seq?.duration || 0; draw(); PrTimeline.drawPlayhead(); });
+    bindBtn("pr-step-back", () => { PrState.playhead -= 1 / (PrState.seq?.fps || 30); draw(); PrTimeline.drawPlayhead(); });
+    bindBtn("pr-step-fwd",  () => { PrState.playhead += 1 / (PrState.seq?.fps || 30); draw(); PrTimeline.drawPlayhead(); });
+    bindBtn("pr-lift",    liftAtPlayhead);
+    bindBtn("pr-extract", extractAtPlayhead);
+    draw();
+  }
+
+  function resizeCanvas() {
+    if (!cvs) return;
+    const p = cvs.parentElement;
+    if (!p) return;
+    cvs.width  = p.clientWidth  || 400;
+    cvs.height = (p.clientHeight || 300) - 36;
+  }
+
+  async function draw() {
+    if (!ctx || !cvs) return;
+    const W = cvs.width, H = cvs.height;
+    ctx.clearRect(0, 0, W, H);
+    const seq = PrState.seq;
+    if (!seq) {
+      ctx.fillStyle = "#0d0d0d"; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "#444"; ctx.font = "13px system-ui"; ctx.textAlign = "center";
+      ctx.fillText("No sequence — create one in the bins panel", W / 2, H / 2);
+      return;
+    }
+    await PrRenderer.renderFrame(ctx, seq, PrState.playhead);
+    _drawOverlay(W, H, seq);
+  }
+
+  function _drawOverlay(W, H, seq) {
+    const by = H - 12, bh = 4;
+    ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.fillRect(0, by - 4, W, bh + 8);
+    ctx.fillStyle = "#333"; ctx.fillRect(0, by, W, bh);
+    const px = (PrState.playhead / seq.duration) * W;
+    ctx.fillStyle = "#5e6ad2"; ctx.fillRect(0, by, px, bh);
+    ctx.fillStyle = "#fff"; ctx.fillRect(px - 1, by - 3, 2, bh + 6);
+    ctx.fillStyle = "rgba(0,0,0,.7)"; ctx.fillRect(0, H - 16, 100, 16);
+    ctx.fillStyle = "#ccc"; ctx.font = "10px monospace"; ctx.textAlign = "left";
+    ctx.fillText(prFmtTCFull(PrState.playhead), 4, H - 4);
+  }
+
+  function onDown(e) {
+    scrub = true; moveScrub(e);
+    const mm = e2 => { if (scrub) moveScrub(e2); };
+    const mu = () => { scrub = false; document.removeEventListener("mousemove", mm); document.removeEventListener("mouseup", mu); };
+    document.addEventListener("mousemove", mm);
+    document.addEventListener("mouseup", mu);
+  }
+
+  function moveScrub(e) {
+    const seq = PrState.seq; if (!seq) return;
+    const r = cvs.getBoundingClientRect();
+    PrState.playhead = Math.max(0, Math.min(seq.duration, ((e.clientX - r.left) / r.width) * seq.duration));
+    draw(); PrTimeline.drawPlayhead();
+  }
+
+  function liftAtPlayhead() {
+    const seq = PrState.seq; if (!seq) return;
+    seq.videoTracks.forEach(tr => {
+      const c = tr.clips.find(c => PrState.playhead >= c.seqStart && PrState.playhead < c.seqEnd);
+      if (c) PrState.removeClip(c.id);
+    });
+    PrTimeline.draw();
+  }
+
+  function extractAtPlayhead() {
+    const seq = PrState.seq; if (!seq) return;
+    PrState.allTracks().forEach(tr => {
+      const c = tr.clips.find(c => PrState.playhead >= c.seqStart && PrState.playhead < c.seqEnd);
+      if (!c) return;
+      const dur = c.seqEnd - c.seqStart;
+      PrState.removeClip(c.id);
+      tr.clips.filter(cc => cc.seqStart >= c.seqEnd).forEach(cc => { cc.seqStart -= dur; cc.seqEnd -= dur; });
+    });
+    PrState.refreshDuration();
+    PrTimeline.draw();
+  }
+
+  return { init, draw, resizeCanvas };
+})();
+
+/* ── PrBins (project / bins panel) ─────────────────────────────────── */
+
+const PrBins = (() => {
+  function init() {
+    bindBtn("pr-new-seq-btn", () => {
+      const n = PrState.seqs.length + 1;
+      const seq = PrState.newSequence(`Sequence ${String(n).padStart(2,'0')}`);
+      refresh();
+      PrTimeline.setSequence(seq);
+      PrProgramMonitor.draw();
+    });
+    refresh();
+  }
+
+  function refresh() {
+    _buildSeqList();
+    _buildAssetList();
+    const el = document.getElementById("pr-prog-seq-name");
+    if (el && PrState.seq) el.textContent = PrState.seq.name;
+  }
+
+  function _buildSeqList() {
+    const el = document.getElementById("pr-seq-list"); if (!el) return;
+    el.innerHTML = "";
+    PrState.seqs.forEach(seq => {
+      const row = _row(seq === PrState.seq);
+      row.innerHTML = `<span class="pr-bin-icon">▶</span><span class="pr-bin-label">${_esc(seq.name)}</span>`;
+      row.title = seq.name;
+      row.addEventListener("click", () => {
+        PrState.setSeq(seq);
+        PrTimeline.setSequence(seq);
+        PrProgramMonitor.draw();
+        refresh();
+      });
+      row.addEventListener("dblclick", () => {
+        const n = prompt("Rename sequence:", seq.name);
+        if (n && n.trim()) { seq.name = n.trim(); refresh(); }
+      });
+      el.appendChild(row);
+    });
+    if (!PrState.seqs.length) el.innerHTML = `<div class="pr-empty-hint">No sequences yet.</div>`;
+  }
+
+  function _buildAssetList() {
+    const el = document.getElementById("pr-bins-assets"); if (!el) return;
+    el.innerHTML = "";
+    const assets = prAllAssets();
+    if (!assets.length) {
+      el.innerHTML = `<div class="pr-empty-hint">Import media in the Motion tab,<br>then switch here to edit.</div>`;
+      return;
+    }
+    assets.forEach(asset => {
+      const icon = asset.type === "video" ? "▶" : asset.type === "audio" ? "♬" : "▣";
+      const dur  = asset.duration ? ` · ${prFmtTC(asset.duration)}` : "";
+      const row = _row(false);
+      row.innerHTML = `<span class="pr-bin-icon">${icon}</span><span class="pr-bin-label">${_esc(asset.name)}</span><span class="pr-bin-dur">${dur}</span>`;
+      row.draggable = true;
+      row.addEventListener("dragstart", e => { e.dataTransfer.setData("pr-asset-id", String(asset.id)); });
+      row.addEventListener("dblclick", () => {
+        if (asset.type !== "audio") {
+          prGetVideo(asset.id).catch(() => {});
+          PrSourceMonitor.loadAsset(asset.id);
+          _switchSrcTab("src");
+        }
+      });
+      row.addEventListener("click", () => {
+        if (asset.type !== "audio") {
+          prGetVideo(asset.id).catch(() => {});
+          PrSourceMonitor.loadAsset(asset.id);
+          _switchSrcTab("src");
+        }
+      });
+      el.appendChild(row);
+    });
+  }
+
+  function _switchSrcTab(tab) {
+    document.getElementById("pr-src-tab-src")?.classList.toggle("active", tab === "src");
+    document.getElementById("pr-src-tab-effects")?.classList.toggle("active", tab === "effects");
+    const sv = document.getElementById("pr-src-view"); if (sv) sv.hidden = tab !== "src";
+    const ev = document.getElementById("pr-effects-view"); if (ev) ev.hidden = tab !== "effects";
+  }
+
+  function _row(active) {
+    const d = document.createElement("div");
+    d.className = "pr-bin-item" + (active ? " active" : "");
+    return d;
+  }
+
+  function _esc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  return { init, refresh };
+})();
+
+/* ── PrTimeline ─────────────────────────────────────────────────────── */
+
+const PrTimeline = (() => {
+  let cvs, ctx, seq = null;
+  const LABEL_W = 118, RULER_H = 26;
+  let drag = null;
+
+  const CLR = { video: "#1e3d72", audio: "#0f4a30", image: "#3d2a70", default: "#2a2a44" };
+
+  function _clipColor(clip) {
+    const a = prAsset(clip.assetId);
+    if (!a) return clip.color || CLR.default;
+    return CLR[a.type] || CLR.default;
+  }
+
+  function _bright(hex, n) {
+    const v = parseInt(hex.replace("#",""), 16);
+    const clamp = x => Math.min(255, Math.max(0, x));
+    return `#${[v>>16, (v>>8)&0xff, v&0xff].map(c => clamp(c+n).toString(16).padStart(2,"0")).join("")}`;
+  }
+
+  function init() {
+    cvs = document.getElementById("pr-tl-canvas"); if (!cvs) return;
+    ctx = cvs.getContext("2d");
+    _resize();
+    window.addEventListener("resize", _resize);
+    cvs.addEventListener("mousedown", onDown);
+    cvs.addEventListener("mousemove", onMove);
+    cvs.addEventListener("mouseup",   onUp);
+    cvs.addEventListener("wheel",     onWheel, { passive: false });
+    cvs.addEventListener("contextmenu", onCtxMenu);
+    cvs.addEventListener("dragover", e => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
+    cvs.addEventListener("drop", onDrop);
+    bindBtn("pr-tool-select", () => _setTool("select"));
+    bindBtn("pr-tool-ripple", () => _setTool("ripple"));
+    bindBtn("pr-tool-razor",  () => _setTool("razor"));
+    bindBtn("pr-tool-slip",   () => _setTool("slip"));
+    bindBtn("pr-tool-hand",   () => _setTool("hand"));
+    bindBtn("pr-tl-zoom-in",  () => { PrState.zoom *= 1.5; draw(); });
+    bindBtn("pr-tl-zoom-out", () => { PrState.zoom /= 1.5; draw(); });
+    bindBtn("pr-delete-sel",  _deleteSelected);
+    bindBtn("pr-add-vtrack",  () => { seq?.videoTracks.push(makePrTrack("video",`V${seq.videoTracks.length+1}`)); draw(); });
+    bindBtn("pr-add-atrack",  () => { seq?.audioTracks.push(makePrTrack("audio",`A${seq.audioTracks.length+1}`)); draw(); });
+    document.addEventListener("keydown", onKeyDown);
+    draw();
+  }
+
+  function _resize() {
+    if (!cvs) return;
+    const p = cvs.parentElement; if (!p) return;
+    cvs.width  = p.clientWidth  || 900;
+    cvs.height = p.clientHeight || 240;
+    draw();
+  }
+
+  function _setTool(t) {
+    PrState.tool = t;
+    ["select","ripple","razor","slip","hand"].forEach(id => {
+      document.getElementById(`pr-tool-${id}`)?.classList.toggle("active", t === id);
+    });
+    cvs.style.cursor = t === "razor" ? "crosshair" : t === "hand" ? "grab" : "default";
+  }
+
+  function setSequence(s) { seq = s; PrState.setSeq(s); draw(); }
+
+  /* ── Drawing ─────────────────────────────────────────────────────── */
+
+  function draw() {
+    if (!ctx || !cvs) return;
+    const W = cvs.width, H = cvs.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#141416"; ctx.fillRect(0, 0, W, H);
+    if (!seq) {
+      ctx.fillStyle = "#3a3a4a"; ctx.font = "13px system-ui"; ctx.textAlign = "center";
+      ctx.fillText("No sequence. Click '+ Seq' to create one.", W/2, H/2); return;
+    }
+    _drawRuler(W);
+    _drawTracks(W, H);
+    drawPlayhead();
+    _drawScrollbar(W, H);
+  }
+
+  function _drawRuler(W) {
+    ctx.fillStyle = "#1e1e22"; ctx.fillRect(0, 0, W, RULER_H);
+    ctx.fillStyle = "#0f0f11"; ctx.fillRect(0, 0, LABEL_W, RULER_H);
+    if (!seq) return;
+    const pps = PrState.zoom;
+    const s0  = PrState.scrollX / pps, s1 = s0 + (W - LABEL_W) / pps;
+    let step = 1;
+    if (pps < 15) step = 30; else if (pps < 40) step = 10; else if (pps < 80) step = 5;
+    else if (pps > 500) step = 0.1; else if (pps > 200) step = 0.25;
+    ctx.strokeStyle = "#444"; ctx.lineWidth = 1;
+    ctx.fillStyle = "#666"; ctx.font = "9px system-ui"; ctx.textAlign = "left";
+    for (let t = Math.floor(s0/step)*step; t <= s1+step; t += step) {
+      const x = LABEL_W + t * pps - PrState.scrollX;
+      if (x < LABEL_W || x > W) continue;
+      ctx.beginPath(); ctx.moveTo(x, RULER_H - 5); ctx.lineTo(x, RULER_H); ctx.stroke();
+      if (x > LABEL_W + 2) ctx.fillText(prFmtTC(t), x + 2, RULER_H - 8);
+    }
+  }
+
+  function _allTracks() {
+    if (!seq) return [];
+    return [...seq.videoTracks, ...seq.audioTracks];
+  }
+
+  function _trackY(idx) {
+    const all = _allTracks();
+    let y = RULER_H - PrState.scrollY;
+    for (let i = 0; i < idx; i++) y += all[i]?.height || 0;
+    return y;
+  }
+
+  function _trackAt(my) {
+    const all = _allTracks();
+    let y = RULER_H - PrState.scrollY;
+    for (let i = 0; i < all.length; i++) {
+      const h = all[i].height;
+      if (my >= y && my < y + h) return { track: all[i], idx: i };
+      y += h;
+    }
+    return null;
+  }
+
+  function _drawTracks(W, H) {
+    const all = _allTracks();
+    const pps = PrState.zoom;
+    all.forEach((tr, i) => {
+      const y = _trackY(i), h = tr.height;
+      if (y + h < RULER_H || y > H) return;
+
+      // Label bg
+      ctx.fillStyle = "#1c1c1f"; ctx.fillRect(0, y, LABEL_W, h);
+      ctx.strokeStyle = "#2a2a2e"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, y + h - .5); ctx.lineTo(W, y + h - .5); ctx.stroke();
+
+      // Track name
+      ctx.fillStyle = "#888"; ctx.font = "11px system-ui"; ctx.textAlign = "left";
+      ctx.fillText(tr.name, 8, y + h/2 + 4);
+
+      // Mute/Solo mini-buttons
+      _miniBtn(LABEL_W - 38, y + 5, "M", tr.mute  ? "#5e6ad2" : "#333", "#ddd");
+      _miniBtn(LABEL_W - 20, y + 5, "S", tr.solo  ? "#d49a20" : "#333", "#ddd");
+
+      // Track lane
+      ctx.fillStyle = "#191919"; ctx.fillRect(LABEL_W, y, W - LABEL_W, h);
+
+      // Clips
+      tr.clips.forEach(clip => {
+        const cx  = LABEL_W + clip.seqStart * pps - PrState.scrollX;
+        const cw  = Math.max(2, (clip.seqEnd - clip.seqStart) * pps);
+        if (cx + cw < LABEL_W || cx > W) return;
+
+        const sel = PrState.selected.has(clip.id);
+        const clr = _clipColor(clip);
+        ctx.fillStyle = sel ? _bright(clr, 50) : clr;
+        _rrect(cx + 1, y + 2, cw - 2, h - 4, 3);
+        ctx.fill();
+        ctx.fillStyle = "rgba(255,255,255,0.08)";
+        ctx.fillRect(cx + 1, y + 2, cw - 2, 3);
+        ctx.strokeStyle = sel ? "#fff" : "rgba(255,255,255,0.18)";
+        ctx.lineWidth = sel ? 1.5 : 0.5;
+        _rrect(cx + 1, y + 2, cw - 2, h - 4, 3); ctx.stroke();
+
+        // Label
+        const name = prAsset(clip.assetId)?.name || "Clip";
+        ctx.fillStyle = "rgba(255,255,255,0.82)"; ctx.font = "10px system-ui"; ctx.textAlign = "left";
+        ctx.save(); ctx.beginPath(); ctx.rect(cx + 3, y + 2, cw - 6, h - 4); ctx.clip();
+        ctx.fillText(name, cx + 5, y + 14); ctx.restore();
+
+        // Waveform stub for audio
+        if (tr.type === "audio" && cw > 24) {
+          ctx.strokeStyle = "rgba(80,200,120,0.45)"; ctx.lineWidth = 1;
+          ctx.beginPath();
+          for (let px = 0; px < cw - 2; px += 2) {
+            const amp = (Math.sin(px * 0.4 + clip.id) * 0.35 + 0.2) * (h / 2 - 6);
+            ctx.moveTo(cx + 2 + px, y + h/2 - amp);
+            ctx.lineTo(cx + 2 + px, y + h/2 + amp);
+          }
+          ctx.stroke();
+        }
+
+        // Transition tints
+        if (clip.transIn) {
+          const tw = Math.min(clip.transIn.duration * pps, cw / 2);
+          ctx.fillStyle = "rgba(240,200,40,0.35)"; ctx.fillRect(cx+1, y+2, tw, h-4);
+        }
+        if (clip.transOut) {
+          const tw = Math.min(clip.transOut.duration * pps, cw / 2);
+          ctx.fillStyle = "rgba(240,200,40,0.35)"; ctx.fillRect(cx + cw - 1 - tw, y+2, tw, h-4);
+        }
+      });
+    });
+  }
+
+  function _miniBtn(x, y, lbl, bg, fg) {
+    ctx.fillStyle = bg; _rrect(x, y, 14, 12, 2); ctx.fill();
+    ctx.fillStyle = fg; ctx.font = "bold 8px system-ui"; ctx.textAlign = "center";
+    ctx.fillText(lbl, x + 7, y + 9);
+  }
+
+  function _rrect(x, y, w, h, r) {
+    ctx.beginPath();
+    if (ctx.roundRect) { ctx.roundRect(x, y, w, h, r); }
+    else {
+      ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+      ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+      ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+      ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath();
+    }
+  }
+
+  function _drawScrollbar(W, H) {
+    if (!seq || seq.duration <= 0) return;
+    const vis = (W - LABEL_W) / PrState.zoom;
+    if (vis >= seq.duration) return;
+    const sbH = 7, sbY = H - sbH;
+    const sbW = W - LABEL_W;
+    ctx.fillStyle = "#222"; ctx.fillRect(LABEL_W, sbY, sbW, sbH);
+    const tw = Math.max(20, (vis / seq.duration) * sbW);
+    const tx = LABEL_W + (PrState.scrollX / (seq.duration * PrState.zoom)) * sbW;
+    ctx.fillStyle = "#444"; _rrect(tx, sbY+1, tw, sbH-2, 3); ctx.fill();
+  }
+
+  function drawPlayhead() {
+    if (!ctx || !cvs || !seq) return;
+    const W = cvs.width, H = cvs.height;
+    const x = LABEL_W + PrState.playhead * PrState.zoom - PrState.scrollX;
+    if (x < LABEL_W - 2 || x > W) return;
+    ctx.strokeStyle = "#e8c444"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(x, RULER_H - 3); ctx.lineTo(x, H - 7); ctx.stroke();
+    ctx.fillStyle = "#e8c444";
+    ctx.beginPath(); ctx.moveTo(x-5,RULER_H-7); ctx.lineTo(x+5,RULER_H-7);
+    ctx.lineTo(x+2,RULER_H-2); ctx.lineTo(x-2,RULER_H-2); ctx.closePath(); ctx.fill();
+    // Timecode on ruler
+    ctx.fillStyle = "rgba(0,0,0,.7)"; ctx.fillRect(Math.max(LABEL_W, x-24), 2, 52, 14);
+    ctx.fillStyle = "#e8c444"; ctx.font = "9px monospace"; ctx.textAlign = "center";
+    ctx.fillText(prFmtTC(PrState.playhead), x, 12);
+  }
+
+  /* ── Mouse ───────────────────────────────────────────────────────── */
+
+  function _sec(cx) { return (cx - LABEL_W + PrState.scrollX) / PrState.zoom; }
+
+  function onDown(e) {
+    const r = cvs.getBoundingClientRect();
+    const mx = (e.clientX - r.left) * cvs.width  / r.width;
+    const my = (e.clientY - r.top)  * cvs.height / r.height;
+    const sec = _sec(mx);
+
+    if (my < RULER_H) {
+      PrState.playhead = Math.max(0, sec);
+      PrProgramMonitor.draw(); draw();
+      drag = { type: "ph" };
+      return;
+    }
+
+    const ti = _trackAt(my); if (!ti) return;
+    const { track } = ti;
+
+    // Mute/solo buttons in label area
+    if (mx < LABEL_W) {
+      const ty = _trackY(ti.idx) + 5;
+      if (mx >= LABEL_W-38 && mx < LABEL_W-24 && my >= ty && my < ty+12) { track.mute = !track.mute; draw(); return; }
+      if (mx >= LABEL_W-20 && mx < LABEL_W-6  && my >= ty && my < ty+12) { track.solo = !track.solo; draw(); return; }
+      return;
+    }
+
+    const tool = PrState.tool;
+    if (tool === "razor") { PrState.razorAt(sec); draw(); return; }
+
+    const clip = track.clips.find(c => sec >= c.seqStart && sec < c.seqEnd);
+    if (!clip) {
+      if (!e.shiftKey) PrState.selected.clear();
+      PrState.playhead = Math.max(0, sec);
+      PrProgramMonitor.draw(); draw();
+      drag = { type: "ph" };
+      return;
+    }
+
+    if (!e.shiftKey) PrState.selected.clear();
+    PrState.selected.add(clip.id);
+
+    const x1 = LABEL_W + clip.seqStart * PrState.zoom - PrState.scrollX;
+    const x2 = LABEL_W + clip.seqEnd   * PrState.zoom - PrState.scrollX;
+    const TOL = 8;
+
+    if (Math.abs(mx - x1) < TOL) {
+      drag = { type: "trim-in", clip, startMx: mx, origSeqStart: clip.seqStart, origSrcIn: clip.srcIn };
+    } else if (Math.abs(mx - x2) < TOL) {
+      drag = { type: "trim-out", clip, startMx: mx, origSeqEnd: clip.seqEnd, origSrcOut: clip.srcOut };
+    } else {
+      const items = [...PrState.selected].map(id => {
+        let c = null;
+        PrState.allTracks().forEach(tr => { const f = tr.clips.find(x => x.id === id); if (f) c = f; });
+        return c ? { clip: c, orig: c.seqStart } : null;
+      }).filter(Boolean);
+      drag = { type: "move", items, startMx: mx, ripple: tool === "ripple" };
+    }
+    draw();
+  }
+
+  function onMove(e) {
+    const r = cvs.getBoundingClientRect();
+    const mx = (e.clientX - r.left) * cvs.width  / r.width;
+    const my = (e.clientY - r.top)  * cvs.height / r.height;
+    const sec = _sec(mx);
+
+    if (!drag) { _cursor(mx, my, sec); return; }
+
+    if (drag.type === "ph") {
+      PrState.playhead = Math.max(0, sec);
+      PrProgramMonitor.draw(); draw();
+    } else if (drag.type === "move") {
+      const dSec = (mx - drag.startMx) / PrState.zoom;
+      drag.items.forEach(item => {
+        const dur = item.clip.seqEnd - item.clip.seqStart;
+        item.clip.seqStart = Math.max(0, item.orig + dSec);
+        item.clip.seqEnd   = item.clip.seqStart + dur;
+      });
+      PrState.refreshDuration(); draw();
+    } else if (drag.type === "trim-in") {
+      const dSec = (mx - drag.startMx) / PrState.zoom;
+      const newStart = Math.max(0, Math.min(drag.clip.seqEnd - 0.067, drag.origSeqStart + dSec));
+      const delta = newStart - drag.origSeqStart;
+      drag.clip.seqStart = newStart;
+      drag.clip.srcIn    = Math.max(0, drag.origSrcIn + delta);
+      draw();
+    } else if (drag.type === "trim-out") {
+      const dSec = (mx - drag.startMx) / PrState.zoom;
+      const newEnd = Math.max(drag.clip.seqStart + 0.067, drag.origSeqEnd + dSec);
+      const delta = newEnd - drag.origSeqEnd;
+      drag.clip.seqEnd   = newEnd;
+      drag.clip.srcOut   = Math.min(prAsset(drag.clip.assetId)?.duration || 9999, Math.max(drag.clip.srcIn + 0.067, drag.origSrcOut + delta));
+      PrState.refreshDuration(); draw();
+    }
+  }
+
+  function onUp() {
+    if (drag && (drag.type === "move" || drag.type?.startsWith("trim"))) {
+      PrState.refreshDuration(); PrProgramMonitor.draw();
+    }
+    drag = null;
+  }
+
+  function _cursor(mx, my, sec) {
+    if (PrState.tool === "razor") { cvs.style.cursor = "crosshair"; return; }
+    const ti = _trackAt(my);
+    if (ti && mx > LABEL_W) {
+      const clip = ti.track.clips.find(c => sec >= c.seqStart && sec < c.seqEnd);
+      if (clip) {
+        const x1 = LABEL_W + clip.seqStart * PrState.zoom - PrState.scrollX;
+        const x2 = LABEL_W + clip.seqEnd   * PrState.zoom - PrState.scrollX;
+        if (Math.abs(mx-x1) < 8 || Math.abs(mx-x2) < 8) { cvs.style.cursor = "ew-resize"; return; }
+        cvs.style.cursor = "grab"; return;
+      }
+    }
+    cvs.style.cursor = "default";
+  }
+
+  function onWheel(e) {
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey) {
+      const r = cvs.getBoundingClientRect();
+      const mx = (e.clientX - r.left) * cvs.width / r.width;
+      const sec = _sec(mx);
+      const factor = e.deltaY > 0 ? 0.75 : 1.33;
+      const oldZoom = PrState.zoom;
+      PrState.zoom *= factor;
+      PrState.scrollX = Math.max(0, (PrState.scrollX + (mx - LABEL_W)) - (mx - LABEL_W) * (PrState.zoom / oldZoom));
+    } else {
+      PrState.scrollX += e.deltaX + e.deltaY * 0.6;
+    }
+    draw();
+  }
+
+  function onCtxMenu(e) {
+    e.preventDefault();
+    const r = cvs.getBoundingClientRect();
+    const mx = (e.clientX - r.left) * cvs.width  / r.width;
+    const my = (e.clientY - r.top)  * cvs.height / r.height;
+    const sec = _sec(mx);
+    const ti = _trackAt(my); if (!ti) return;
+    const clip = ti.track.clips.find(c => sec >= c.seqStart && sec < c.seqEnd); if (!clip) return;
+    _ctxMenu(e.clientX, e.clientY, clip, ti.track);
+  }
+
+  function _ctxMenu(cx, cy, clip, track) {
+    document.getElementById("pr-ctx")?.remove();
+    const m = document.createElement("div"); m.id = "pr-ctx"; m.className = "pr-ctx-menu";
+    m.style.cssText = `left:${cx}px;top:${cy}px`;
+    const items = [
+      ["Delete",            () => { PrState.removeClip(clip.id); draw(); }],
+      ["Ripple Delete",     () => _rippleDel(clip, track)],
+      null,
+      ["Dissolve In",       () => { clip.transIn  = { type:"dissolve", duration:0.5 }; draw(); }],
+      ["Dissolve Out",      () => { clip.transOut = { type:"dissolve", duration:0.5 }; draw(); }],
+      ["Dip to Black In",   () => { clip.transIn  = { type:"dip", duration:0.5 }; draw(); }],
+      ["Dip to Black Out",  () => { clip.transOut = { type:"dip", duration:0.5 }; draw(); }],
+      ["Clear Transitions", () => { clip.transIn = null; clip.transOut = null; draw(); }],
+      null,
+      ["Speed / Duration…", () => _speedDlg(clip)],
+      ["Clip Properties…",  () => _propsDlg(clip)],
+    ];
+    items.forEach(item => {
+      if (!item) { const s = document.createElement("div"); s.className = "pr-ctx-sep"; m.appendChild(s); return; }
+      const row = document.createElement("div"); row.className = "pr-ctx-item"; row.textContent = item[0];
+      row.onclick = () => { item[1](); m.remove(); };
+      m.appendChild(row);
+    });
+    document.body.appendChild(m);
+    setTimeout(() => document.addEventListener("mousedown", function d() { m.remove(); document.removeEventListener("mousedown", d); }, { once: true }), 10);
+  }
+
+  function _rippleDel(clip, track) {
+    const dur = clip.seqEnd - clip.seqStart, start = clip.seqStart;
+    PrState.removeClip(clip.id);
+    track.clips.filter(c => c.seqStart >= start).forEach(c => { c.seqStart -= dur; c.seqEnd -= dur; });
+    PrState.refreshDuration(); draw();
+  }
+
+  function _speedDlg(clip) {
+    const v = parseFloat(prompt("Speed multiplier (1.0 = normal, 2.0 = double speed):", String(clip.speed)));
+    if (isNaN(v) || v <= 0) return;
+    clip.speed = v;
+    clip.seqEnd = clip.seqStart + (clip.srcOut - clip.srcIn) / v;
+    PrState.refreshDuration(); draw();
+  }
+
+  function _propsDlg(clip) {
+    const a = prAsset(clip.assetId);
+    const lines = [
+      `Clip: ${a?.name || "Unknown"}`,
+      `Start: ${prFmtTCFull(clip.seqStart)}`,
+      `End:   ${prFmtTCFull(clip.seqEnd)}`,
+      `Dur:   ${prFmtTCFull(clip.seqEnd - clip.seqStart)}`,
+      `Speed: ${(clip.speed * 100).toFixed(0)}%`,
+      `Opacity: ${clip.opacity}%`,
+      `Src In: ${prFmtTC(clip.srcIn)}  Out: ${prFmtTC(clip.srcOut)}`,
+    ];
+    alert(lines.join("\n"));
+  }
+
+  function _deleteSelected() {
+    PrState.selected.forEach(id => PrState.removeClip(id));
+    PrState.selected.clear(); draw();
+  }
+
+  function onDrop(e) {
+    e.preventDefault();
+    const assetId = parseInt(e.dataTransfer.getData("pr-asset-id"), 10);
+    if (!assetId || !seq) return;
+    const r = cvs.getBoundingClientRect();
+    const mx = (e.clientX - r.left) * cvs.width  / r.width;
+    const my = (e.clientY - r.top)  * cvs.height / r.height;
+    const sec = Math.max(0, _sec(mx));
+    const ti = _trackAt(my); if (!ti) return;
+    const a = prAsset(assetId); if (!a) return;
+    const dur = a.duration || 5;
+    PrState.addClipToTrack(ti.track, makePrClip(assetId, 0, dur), sec);
+    draw();
+  }
+
+  function onKeyDown(e) {
+    if (document.getElementById("pr-app")?.hidden) return;
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+    if (e.code === "Space") { e.preventDefault(); PrState.togglePlay(); }
+    else if (e.code === "KeyV") _setTool("select");
+    else if (e.code === "KeyC" && !e.ctrlKey && !e.metaKey) _setTool("razor");
+    else if (e.code === "KeyB") _setTool("ripple");
+    else if (e.code === "KeyH") _setTool("hand");
+    else if (e.code === "Delete" || e.code === "Backspace") _deleteSelected();
+    else if (e.code === "ArrowLeft")  { PrState.playhead -= e.shiftKey ? 1 : 1/(seq?.fps||30); PrProgramMonitor.draw(); draw(); }
+    else if (e.code === "ArrowRight") { PrState.playhead += e.shiftKey ? 1 : 1/(seq?.fps||30); PrProgramMonitor.draw(); draw(); }
+  }
+
+  return { init, setSequence, draw, drawPlayhead };
+})();
+
+/* ── PrTabManager ────────────────────────────────────────────────────── */
+
+const PrTabManager = (() => {
+  function init() {
+    bindBtn("tab-motion", () => switchTo("motion"));
+    bindBtn("tab-edit",   () => switchTo("edit"));
+  }
+
+  function switchTo(tab) {
+    const edit = tab === "edit";
+    const s = (id, hide) => { const el = document.getElementById(id); if (el) el.hidden = hide; };
+    s("main", edit);
+    s("timeline", edit);
+    s("rs-tl", edit);
+    s("pr-app", !edit);
+    document.getElementById("tab-motion")?.classList.toggle("active", !edit);
+    document.getElementById("tab-edit")?.classList.toggle("active",   edit);
+    if (edit) {
+      PrSourceMonitor.resizeCanvas();
+      PrProgramMonitor.resizeCanvas();
+      PrTimeline.draw();
+      PrProgramMonitor.draw();
+      PrBins.refresh();
+    }
+  }
+
+  return { init, switchTo };
+})();
+
+/* ── Helper ─────────────────────────────────────────────────────────── */
+
+function bindBtn(id, fn) {
+  document.getElementById(id)?.addEventListener("click", fn);
+}
+
+/* ── initPremiere ────────────────────────────────────────────────────── */
+
+function initPremiere() {
+  if (PrState.seqs.length === 0) PrState.newSequence("Sequence 01");
+
+  PrSourceMonitor.init();
+  PrProgramMonitor.init();
+  PrBins.init();
+  PrTimeline.init();
+  PrTimeline.setSequence(PrState.seq);
+  PrTabManager.init();
+
+  // Source-monitor tabs
+  function switchSrcTab(tab) {
+    document.getElementById("pr-src-tab-src")?.classList.toggle("active", tab === "src");
+    document.getElementById("pr-src-tab-effects")?.classList.toggle("active", tab === "effects");
+    const sv = document.getElementById("pr-src-view"),  ev = document.getElementById("pr-effects-view");
+    if (sv) sv.hidden = tab !== "src";
+    if (ev) ev.hidden = tab !== "effects";
+  }
+  bindBtn("pr-src-tab-src",     () => switchSrcTab("src"));
+  bindBtn("pr-src-tab-effects", () => switchSrcTab("effects"));
+
+  // Effects panel: drag transition onto selected clip
+  document.querySelectorAll(".pr-fx-item[data-trans]").forEach(item => {
+    item.addEventListener("dblclick", () => {
+      const type = item.dataset.trans;
+      PrState.selected.forEach(id => {
+        PrState.allTracks().forEach(tr => {
+          const c = tr.clips.find(c => c.id === id);
+          if (c) { c.transIn = { type, duration: 0.5 }; c.transOut = { type, duration: 0.5 }; }
+        });
+      });
+      PrTimeline.draw();
+    });
+    item.title = "Double-click to apply to selected clip";
+  });
+
+  // Sequence settings
+  document.getElementById("pr-seq-fps")?.addEventListener("change", e => {
+    if (PrState.seq) PrState.seq.fps = parseFloat(e.target.value);
+  });
+  document.getElementById("pr-seq-res")?.addEventListener("change", e => {
+    const [w, h] = e.target.value.split("x").map(Number);
+    if (PrState.seq) { PrState.seq.width = w; PrState.seq.height = h; }
+  });
+
+  // Export sequence
+  bindBtn("pr-export-btn", () => {
+    if (typeof toast !== "undefined") toast("Use the Motion tab Export for full rendering. Premiere sequences support MP4 / WebM export.");
+  });
+}

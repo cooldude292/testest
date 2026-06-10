@@ -766,3 +766,193 @@ kbd {
 
 /* ─── Pen path points in viewport (orange overlay) ──────────── */
 canvas.pen-active { cursor: crosshair; }
+
+/* ═══════════════════════════════════════════════════════════════
+   Premiere Pro "Edit" Tab
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Tab switcher in top bar ──────────────────────────────────── */
+.tb-tabs { gap: 4px; }
+.tab-btn {
+  height: 28px; padding: 0 14px; border-radius: var(--radius-sm);
+  font-size: 12.5px; font-weight: 500; color: var(--text-3);
+  border: 1px solid transparent; transition: background 0.12s, color 0.12s;
+}
+.tab-btn:hover { background: var(--hover); color: var(--text); }
+.tab-btn.active { background: var(--surface-3); color: var(--text); border-color: var(--border); }
+
+/* ── pr-app layout ──────────────────────────────────────────────── */
+#pr-app {
+  flex: 1;
+  display: grid;
+  grid-template-rows: 1fr 270px;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+#pr-top {
+  display: grid;
+  grid-template-columns: 210px 1fr 1fr;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+}
+
+/* ── Bins panel ─────────────────────────────────────────────────── */
+#pr-bins-panel {
+  display: flex; flex-direction: column;
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.pr-panel-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 10px; height: 32px; flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.pr-panel-title { font-size: 11px; font-weight: 600; color: var(--text-2); letter-spacing: 0.03em; }
+
+.pr-section-lbl {
+  font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-3); padding: 6px 10px 3px; flex-shrink: 0;
+}
+
+.pr-bin-list {
+  flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0;
+}
+
+.pr-bin-item {
+  display: flex; align-items: center; padding: 4px 10px;
+  font-size: 11.5px; color: var(--text-2); cursor: pointer;
+  border-left: 2px solid transparent;
+  transition: background 0.1s;
+  gap: 5px; overflow: hidden; white-space: nowrap;
+}
+.pr-bin-item:hover { background: var(--hover); color: var(--text); }
+.pr-bin-item.active { background: var(--accent-dim); color: var(--text); border-left-color: var(--accent); }
+.pr-bin-icon { font-size: 10px; color: var(--text-3); flex-shrink: 0; }
+.pr-bin-label { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.pr-bin-dur { color: var(--text-3); font-size: 10px; flex-shrink: 0; }
+.pr-empty-hint { padding: 12px 10px; font-size: 11px; color: var(--text-3); line-height: 1.5; }
+
+/* ── Source & Program monitor columns ──────────────────────────── */
+#pr-source-col,
+#pr-program-col {
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  background: var(--surface);
+}
+#pr-source-col { border-right: 1px solid var(--border); }
+
+.pr-panel-tabs {
+  display: flex; border-bottom: 1px solid var(--border); background: var(--surface-2); flex-shrink: 0;
+}
+.pr-tab {
+  padding: 0 14px; height: 30px; font-size: 11.5px; color: var(--text-3);
+  border-bottom: 2px solid transparent; transition: color 0.1s;
+}
+.pr-tab:hover { color: var(--text); }
+.pr-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+
+.pr-monitor-view {
+  flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+  position: relative;
+}
+#pr-src-canvas,
+#pr-prog-canvas {
+  flex: 1; width: 100%; display: block; background: #000; min-height: 0;
+  object-fit: contain;
+}
+
+.pr-monitor-bar {
+  display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+  background: var(--surface-2); border-top: 1px solid var(--border);
+  flex-shrink: 0; flex-wrap: wrap;
+}
+.pr-clip-name {
+  font-size: 11px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px;
+}
+.pr-mon-btns { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.pr-mon-btn {
+  height: 22px; padding: 0 8px; border-radius: 4px;
+  font-size: 11px; font-weight: 500; color: var(--text-2);
+  border: 1px solid var(--border); transition: background 0.1s, color 0.1s;
+}
+.pr-mon-btn:hover { background: var(--hover); color: var(--text); }
+.pr-mon-btn.play { width: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+.pr-mon-btn.play svg { width: 12px; height: 12px; }
+.pr-mon-btn.accent { border-color: var(--accent); color: var(--accent-bright); }
+.pr-mon-btn.accent:hover { background: var(--accent-dim); }
+.pr-sep { width: 1px; height: 16px; background: var(--border); margin: 0 2px; }
+
+.pr-seq-settings { display: flex; gap: 4px; }
+.pr-sel {
+  height: 22px; padding: 0 6px; font-size: 11px;
+  background: var(--surface-3); border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text-2); cursor: pointer;
+}
+.pr-sel:hover { border-color: var(--accent); }
+
+/* ── Effects panel ─────────────────────────────────────────────── */
+.pr-effects-panel { flex: 1; overflow-y: auto; padding: 4px 0; }
+.pr-fx-group {
+  padding: 6px 10px 3px; font-size: 9px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--text-3);
+}
+.pr-fx-item {
+  padding: 4px 16px; font-size: 11.5px; color: var(--text-2); cursor: default;
+  transition: background 0.1s;
+}
+.pr-fx-item:hover { background: var(--hover); color: var(--text); }
+.pr-fx-item[data-trans] { cursor: pointer; }
+.pr-fx-item[data-trans]::before { content: "▶ "; font-size: 9px; color: var(--text-3); }
+
+/* ── Timeline section ──────────────────────────────────────────── */
+#pr-timeline-section {
+  display: flex; flex-direction: column;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  overflow: hidden;
+}
+
+#pr-tl-toolbar {
+  display: flex; align-items: center; gap: 6px; padding: 0 10px;
+  height: 36px; flex-shrink: 0;
+  background: var(--surface-2); border-bottom: 1px solid var(--border);
+}
+.pr-tools { display: flex; gap: 2px; }
+.pr-tl-actions { display: flex; gap: 2px; }
+
+.pr-tool-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 26px; height: 26px; padding: 0 5px; border-radius: var(--radius-sm);
+  font-size: 11px; font-weight: 500; color: var(--text-2);
+  border: 1px solid transparent; transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+.pr-tool-btn:hover { background: var(--hover); color: var(--text); }
+.pr-tool-btn.active { background: var(--surface-3); color: var(--text); border-color: var(--border); }
+.pr-tool-btn svg { pointer-events: none; }
+
+.pr-tl-sep { width: 1px; height: 20px; background: var(--border); margin: 0 2px; }
+.pr-tl-zoom-group { display: flex; gap: 2px; }
+.pr-tl-actions { display: flex; gap: 2px; }
+
+#pr-tl-body {
+  flex: 1; overflow: hidden; position: relative;
+}
+#pr-tl-canvas { display: block; width: 100%; height: 100%; }
+
+/* ── Context menu ──────────────────────────────────────────────── */
+.pr-ctx-menu {
+  position: fixed; z-index: 9999;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow);
+  padding: 4px 0; min-width: 180px;
+}
+.pr-ctx-item {
+  padding: 5px 14px; font-size: 12px; color: var(--text-2); cursor: pointer;
+  transition: background 0.08s;
+}
+.pr-ctx-item:hover { background: var(--hover); color: var(--text); }
+.pr-ctx-sep { height: 1px; background: var(--border); margin: 3px 0; }

@@ -20,7 +20,12 @@
     <input id="project-name" class="ghost-input" value="Untitled Project" spellcheck="false">
   </div>
 
-  <div class="tb-group tb-center">
+  <div class="tb-group tb-center tb-tabs">
+    <button class="tab-btn active" id="tab-motion">Motion</button>
+    <button class="tab-btn" id="tab-edit">Edit</button>
+  </div>
+
+  <div class="tb-group tb-center" id="tb-motion-controls">
     <button class="icon-btn" id="btn-go-start" title="Go to start (Home)">
       <svg viewBox="0 0 16 16"><path d="M3 2.5v11M13 3.2v9.6c0 .6-.7 1-1.2.6L5.6 8.6a.75.75 0 0 1 0-1.2l6.2-4.8c.5-.4 1.2 0 1.2.6Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
     </button>
@@ -45,6 +50,11 @@
       <svg viewBox="0 0 16 16"><path d="M3 6v4h2.5L9 13V3L5.5 6H3ZM11 5.5a3.5 3.5 0 0 1 0 5M12.8 3.7a6 6 0 0 1 0 8.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
     <input class="timecode" id="timecode" value="0:00:00:00" spellcheck="false" title="Click to type a time (e.g. 1:30, 2.5, f45)">
+  </div>
+
+  <div class="tb-group tb-center" id="tb-edit-controls" hidden>
+    <!-- Premiere transport controls live in program monitor bar -->
+    <span style="color:var(--text-3);font-size:12px">Adobe Premiere Pro — Edit tab</span>
   </div>
 
   <div class="tb-group tb-right">
@@ -145,7 +155,7 @@
   </aside>
 </div>
 
-<div class="resizer h" id="rs-tl"></div>
+<div class="resizer h" id="rs-tl" data-rs-tl></div>
 
 <!-- ───────────────────────── Timeline ───────────────────────── -->
 <section id="timeline">
@@ -178,6 +188,152 @@
     </div>
   </div>
 </section>
+
+<!-- ───────────────────────── Premiere Pro Edit Tab ─────────────────── -->
+<div id="pr-app" hidden>
+
+  <!-- Top area: Bins | Source Monitor | Program Monitor -->
+  <div id="pr-top">
+
+    <!-- Bins / Project panel -->
+    <div id="pr-bins-panel">
+      <div class="pr-panel-head">
+        <span class="pr-panel-title">Project</span>
+        <button class="btn ghost sm" id="pr-new-seq-btn" title="New Sequence">+ Seq</button>
+      </div>
+      <div class="pr-section-lbl">Sequences</div>
+      <div id="pr-seq-list"  class="pr-bin-list"></div>
+      <div class="pr-section-lbl">Media</div>
+      <div id="pr-bins-assets" class="pr-bin-list"></div>
+    </div>
+
+    <!-- Source Monitor -->
+    <div id="pr-source-col">
+      <div class="pr-panel-tabs">
+        <button class="pr-tab active" id="pr-src-tab-src">Source</button>
+        <button class="pr-tab" id="pr-src-tab-effects">Effects</button>
+      </div>
+
+      <div id="pr-src-view" class="pr-monitor-view">
+        <canvas id="pr-src-canvas"></canvas>
+        <div class="pr-monitor-bar">
+          <span class="pr-clip-name" id="pr-src-name">No clip</span>
+          <div class="pr-mon-btns">
+            <button class="pr-mon-btn" id="pr-src-set-in"  title="Mark In (I)">In</button>
+            <button class="pr-mon-btn play" id="pr-src-play" title="Play">▶</button>
+            <button class="pr-mon-btn" id="pr-src-set-out"  title="Mark Out (O)">Out</button>
+            <span class="pr-sep"></span>
+            <button class="pr-mon-btn accent" id="pr-src-insert"    title="Insert at playhead">Insert</button>
+            <button class="pr-mon-btn accent" id="pr-src-overwrite" title="Overwrite at playhead">Overwrite</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="pr-effects-view" class="pr-effects-panel" hidden>
+        <div class="pr-fx-group">Video Transitions</div>
+        <div class="pr-fx-item" data-trans="dissolve">Cross Dissolve</div>
+        <div class="pr-fx-item" data-trans="dip">Dip to Black</div>
+        <div class="pr-fx-item" data-trans="wipe_r">Wipe Right</div>
+        <div class="pr-fx-item" data-trans="wipe_u">Wipe Up</div>
+        <div class="pr-fx-item" data-trans="zoom">Zoom</div>
+        <div class="pr-fx-group">Video Effects</div>
+        <div class="pr-fx-item">Opacity</div>
+        <div class="pr-fx-item">Brightness &amp; Contrast</div>
+        <div class="pr-fx-item">Lumetri Color</div>
+        <div class="pr-fx-group">Audio Transitions</div>
+        <div class="pr-fx-item">Constant Power</div>
+        <div class="pr-fx-item">Constant Gain</div>
+        <div class="pr-fx-group">Audio Effects</div>
+        <div class="pr-fx-item">Volume</div>
+        <div class="pr-fx-item">Channel Volume</div>
+        <div class="pr-fx-item">Reverb</div>
+        <div class="pr-fx-item">EQ</div>
+        <div class="pr-fx-item">DeNoise</div>
+      </div>
+    </div>
+
+    <!-- Program Monitor -->
+    <div id="pr-program-col">
+      <div class="pr-panel-head">
+        <span class="pr-panel-title">Program: <span id="pr-prog-seq-name">—</span></span>
+        <div class="pr-seq-settings">
+          <select id="pr-seq-fps" class="pr-sel" title="Sequence frame rate">
+            <option value="24">24 fps</option>
+            <option value="25">25 fps</option>
+            <option value="30" selected>30 fps</option>
+            <option value="60">60 fps</option>
+          </select>
+          <select id="pr-seq-res" class="pr-sel" title="Resolution">
+            <option value="1920x1080" selected>1920×1080</option>
+            <option value="1280x720">1280×720</option>
+            <option value="3840x2160">4K</option>
+          </select>
+        </div>
+      </div>
+      <div class="pr-monitor-view">
+        <canvas id="pr-prog-canvas"></canvas>
+        <div class="pr-monitor-bar">
+          <div class="pr-mon-btns">
+            <button class="pr-mon-btn" id="pr-go-start"  title="Go to start">|◀</button>
+            <button class="pr-mon-btn" id="pr-step-back" title="Step back">◀</button>
+            <button class="pr-mon-btn play" id="pr-play-btn" title="Play / Pause (Space)">
+              <svg viewBox="0 0 16 16"><path d="M4.5 3.1v9.8c0 .62.68 1 1.2.65l7.4-4.9a.78.78 0 0 0 0-1.3l-7.4-4.9A.78.78 0 0 0 4.5 3.1Z" fill="currentColor"/></svg>
+            </button>
+            <button class="pr-mon-btn" id="pr-step-fwd"  title="Step forward">▶|</button>
+            <button class="pr-mon-btn" id="pr-go-end"    title="Go to end">▶|</button>
+            <span class="pr-sep"></span>
+            <button class="pr-mon-btn" id="pr-lift"    title="Lift (remove, keep gap)">Lift</button>
+            <button class="pr-mon-btn" id="pr-extract"  title="Extract (ripple delete)">Extract</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /#pr-top -->
+
+  <!-- Timeline -->
+  <div id="pr-timeline-section">
+    <div id="pr-tl-toolbar">
+      <div class="pr-tools">
+        <button class="pr-tool-btn active" id="pr-tool-select" title="Selection (V)">
+          <svg viewBox="0 0 16 16" width="14" height="14"><path d="M3 2 13 8l-5 1-2 5L3 2Z" fill="currentColor"/></svg>
+        </button>
+        <button class="pr-tool-btn" id="pr-tool-ripple" title="Ripple Edit (B)">
+          <svg viewBox="0 0 16 16" width="14" height="14"><path d="M2 2 9 8l-7 6V2Z" fill="currentColor"/><line x1="13" y1="2" x2="13" y2="14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        </button>
+        <button class="pr-tool-btn" id="pr-tool-razor" title="Razor / Cut (C)">
+          <svg viewBox="0 0 16 16" width="14" height="14"><path d="M2 13 9 2l2 2-2 2 4 6-2 1-3-4-2 4-2-1Z" fill="currentColor"/></svg>
+        </button>
+        <button class="pr-tool-btn" id="pr-tool-slip" title="Slip (Y)">
+          <svg viewBox="0 0 16 16" width="14" height="14"><path d="M2 8h12M5 5 2 8l3 3M11 5l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <button class="pr-tool-btn" id="pr-tool-hand" title="Hand (H)">
+          <svg viewBox="0 0 16 16" width="14" height="14"><path d="M5 8V3.5a1 1 0 0 1 2 0V7a1 1 0 0 1 2-1v.5a1 1 0 0 1 2 0v.5a1 1 0 0 1 2 0V11a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V9a1 1 0 0 1 2 0" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <div class="pr-tl-actions">
+        <button class="pr-tool-btn" id="pr-add-vtrack" title="Add Video Track">+V</button>
+        <button class="pr-tool-btn" id="pr-add-atrack" title="Add Audio Track">+A</button>
+        <button class="pr-tool-btn" id="pr-delete-sel"  title="Delete selected clip(s)">Del</button>
+      </div>
+      <div class="pr-tl-sep"></div>
+      <div class="pr-tl-zoom-group">
+        <button class="pr-tool-btn" id="pr-tl-zoom-out" title="Zoom out">−</button>
+        <button class="pr-tool-btn" id="pr-tl-zoom-in"  title="Zoom in">+</button>
+      </div>
+      <div class="pr-tl-sep"></div>
+      <select id="pr-export-format" class="pr-sel">
+        <option value="mp4">MP4</option>
+        <option value="webm">WebM</option>
+      </select>
+      <button class="btn primary sm" id="pr-export-btn">Export</button>
+    </div>
+    <div id="pr-tl-body">
+      <canvas id="pr-tl-canvas"></canvas>
+    </div>
+  </div>
+
+</div><!-- /#pr-app -->
 
 <!-- ───────────────────────── Command palette ───────────────────────── -->
 <div id="palette-overlay" class="overlay" hidden>
@@ -345,6 +501,7 @@ window.Muxer = null;
 <script src="js/timeline.js"></script>
 <script src="js/viewport.js"></script>
 <script src="js/panels.js"></script>
+<script src="js/premiere.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

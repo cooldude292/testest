@@ -1622,11 +1622,11 @@ async function downloadDesktopApp() {
     const fetchText = async url => {
       try { const r = await fetch(url); return await r.text(); } catch (e) { return ""; }
     };
-    const [indexHtml, stylesCss, coreJs, rendererJs, timelineJs, viewportJs, panelsJs, appJs] = await Promise.all([
+    const [indexHtml, stylesCss, coreJs, rendererJs, timelineJs, viewportJs, panelsJs, premiereJs, appJs] = await Promise.all([
       fetchText("index.html"), fetchText("styles.css"),
       fetchText("js/core.js"), fetchText("js/renderer.js"),
       fetchText("js/timeline.js"), fetchText("js/viewport.js"),
-      fetchText("js/panels.js"), fetchText("js/app.js"),
+      fetchText("js/panels.js"), fetchText("js/premiere.js"), fetchText("js/app.js"),
     ]);
 
     const mainJs = `const { app, BrowserWindow, dialog, ipcMain } = require('electron');
@@ -1724,6 +1724,7 @@ The built app will be in the dist/ folder.
       { name: "js/timeline.js", data: enc.encode(timelineJs) },
       { name: "js/viewport.js", data: enc.encode(viewportJs) },
       { name: "js/panels.js", data: enc.encode(panelsJs) },
+      { name: "js/premiere.js", data: enc.encode(premiereJs) },
       { name: "js/app.js", data: enc.encode(appJs) },
       { name: "electron/main.js", data: enc.encode(mainJs) },
       { name: "electron/preload.js", data: enc.encode(preloadJs) },
@@ -2179,6 +2180,8 @@ function initApp() {
   Timeline.fit();
 
   setTimeout(() => tryRestoreAutosave(), 300);
+
+  if (typeof initPremiere === "function") initPremiere();
 }
 
 window.addEventListener("DOMContentLoaded", initApp);
