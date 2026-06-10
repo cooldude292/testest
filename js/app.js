@@ -1268,6 +1268,9 @@ const Palette = (() => {
         MotionTracker.track(vidL, sel);
       }},
 
+      // script editor
+      { title: "Open Script Editor", run: () => ScriptEditor.open() },
+
       // desktop
       { title: "Download desktop app (Electron)", run: () => downloadDesktopApp() },
 
@@ -2180,6 +2183,102 @@ const ExportQueue = (() => {
   return { open, close, _remove };
 })();
 
+/* ── Script Editor REPL ── */
+const ScriptEditor = (() => {
+  let _overlay = null;
+
+  function open() {
+    if (!_overlay) _build();
+    _overlay.hidden = false;
+    _overlay.querySelector("textarea").focus();
+  }
+  function close() { _overlay.hidden = true; }
+
+  function _build() {
+    _overlay = document.createElement("div");
+    _overlay.className = "overlay";
+    _overlay.id = "script-overlay";
+    _overlay.innerHTML = `
+      <div class="modal script-modal">
+        <div class="modal-head">
+          <span>Script Editor</span>
+          <span style="font-size:11px;color:var(--text-3);flex:1;margin-left:12px">Run JS against the current project (Ctrl+Enter to run)</span>
+          <button class="icon-btn sm" id="script-close">
+            <svg viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <div class="modal-body" style="padding:0;display:flex;flex-direction:column;height:400px">
+          <textarea id="script-input" spellcheck="false" style="flex:1;background:var(--bg-1);color:var(--text-1);border:none;padding:12px;font:13px/1.5 'JetBrains Mono','Fira Mono',monospace;resize:none;outline:none;border-bottom:1px solid var(--border)"
+          placeholder="// Example: animate opacity on all text layers
+App.layers.filter(l=&gt;l.type==='text').forEach(l=&gt;{
+  Layers.toggleAnim(l,'opacity');
+  Layers.upsertKey(l,'opacity',0,0);
+  Layers.upsertKey(l,'opacity',1,100);
+});
+App.emit('project');">
+          </textarea>
+          <div id="script-output" style="height:100px;overflow-y:auto;background:var(--bg-1);padding:8px 12px;font:12px/1.4 'JetBrains Mono','Fira Mono',monospace;color:var(--text-2)">
+            <div style="color:var(--text-3)">// Output appears here</div>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn ghost" id="script-clear-btn">Clear</button>
+          <button class="btn ghost" id="script-examples-btn">Examples</button>
+          <div style="flex:1"></div>
+          <button class="btn ghost" id="script-close-btn">Close</button>
+          <button class="btn primary" id="script-run-btn">Run &#9654; (Ctrl+Enter)</button>
+        </div>
+      </div>`;
+    document.body.appendChild(_overlay);
+
+    const out = _overlay.querySelector("#script-output");
+    const inp = _overlay.querySelector("#script-input");
+
+    document.getElementById("script-close").onclick = close;
+    document.getElementById("script-close-btn").onclick = close;
+    document.getElementById("script-clear-btn").onclick = () => { inp.value = ""; out.innerHTML = '<div style="color:var(--text-3)">// Output appears here</div>'; };
+    document.getElementById("script-run-btn").onclick = run;
+    document.getElementById("script-examples-btn").onclick = () => {
+      const examples = [
+        ["Animate all text opacity", "App.layers.filter(l=>l.type==='text').forEach(l=>{\n  App.commit();\n  Layers.toggleAnim(l,'opacity');\n  Layers.upsertKey(l,'opacity',0,0);\n  Layers.upsertKey(l,'opacity',1,100);\n});\nApp.emit('project');"],
+        ["List all layer names", "App.layers.map(l=>l.name+' ('+l.type+')').join('\\n');"],
+        ["Randomize layer positions", "App.commit();\nApp.layers.forEach(l=>{\n  Layers.setProp(l,'position',[Math.random()*App.comp.width,Math.random()*App.comp.height]);\n});\nApp.emit('project');"],
+        ["Set all scales to 50%", "App.commit();\nApp.layers.forEach(l=>Layers.setProp(l,'scale',[50,50]));\nApp.emit('project');"],
+        ["Print comp info", "const c=App.comp;\n`${c.name}: ${c.width}x${c.height} @ ${c.fps}fps, ${c.duration}s, ${c.layers.length} layers`;"],
+      ];
+      const eg = examples[Math.floor(Math.random() * examples.length)];
+      inp.value = eg[1];
+    };
+
+    inp.addEventListener("keydown", e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); run(); }
+      if (e.key === "Tab") { e.preventDefault(); const s=inp.selectionStart, end=inp.selectionEnd; inp.value=inp.value.slice(0,s)+"  "+inp.value.slice(end); inp.selectionStart=inp.selectionEnd=s+2; }
+    });
+    _overlay.addEventListener("pointerdown", e => { if (e.target === _overlay) close(); });
+
+    function run() {
+      const code = inp.value.trim(); if (!code) return;
+      const logs = [];
+      const fakeConsole = { log: (...a)=>logs.push(a.map(x=>typeof x==="object"?JSON.stringify(x):String(x)).join(" ")), error: (...a)=>logs.push("ERROR: "+a.join(" ")), warn: (...a)=>logs.push("WARN: "+a.join(" ")) };
+      try {
+        const fn = new Function(
+          "App","Layers","Comps","Assets","History","animProp","evalProp","cloneVal","uid","timecode","makeLayer","makeComp","toast","console",
+          '"use strict";\n' + code + "\n//# sourceURL=script.js"
+        );
+        const result = fn(App,Layers,Comps,Assets,History,animProp,evalProp,cloneVal,uid,timecode,makeLayer,makeComp,toast,fakeConsole);
+        const lines = [...logs];
+        if (result !== undefined) lines.push("→ " + (typeof result === "object" ? JSON.stringify(result, null, 2) : String(result)));
+        out.innerHTML = lines.length ? lines.map(l=>`<div>${escapeHtml(l)}</div>`).join("") : '<div style="color:var(--text-3)">// (no output)</div>';
+      } catch(err) {
+        out.innerHTML = `<div style="color:var(--danger)">${escapeHtml(err.message)}</div>`;
+      }
+      out.scrollTop = out.scrollHeight;
+    }
+  }
+
+  return { open, close };
+})();
+
 /* ── boot ── */
 function initApp() {
   Settings.load();
@@ -2243,6 +2342,7 @@ function initApp() {
   document.getElementById("btn-open").addEventListener("click", () => document.getElementById("file-open").click());
   document.getElementById("btn-export").addEventListener("click", () => Exporter.open());
   document.getElementById("btn-export-queue")?.addEventListener("click", ExportQueue.open);
+  document.getElementById("btn-script-editor")?.addEventListener("click", ScriptEditor.open);
   document.getElementById("btn-help").addEventListener("click", showShortcuts);
   document.getElementById("shortcuts-close").addEventListener("click", () => {
     document.getElementById("shortcuts-overlay").hidden = true;

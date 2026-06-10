@@ -982,3 +982,8 @@ canvas.pen-active { cursor: crosshair; }
 
 /* Crash recovery */
 #crash-recovery-overlay .modal p { line-height: 1.5; }
+
+/* Script editor */
+.script-modal { width: 680px; max-width: 95vw; }
+.script-modal .modal-body { gap: 0; }
+#script-input::selection { background: var(--accent-light, #3a4090); }

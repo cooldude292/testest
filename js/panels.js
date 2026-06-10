@@ -517,6 +517,14 @@ const Panels = (() => {
     }
   }
 
+  function secHead(text) {
+    const el = document.createElement("div");
+    el.className = "prop-group-title";
+    el.style.marginTop = "8px";
+    el.textContent = text;
+    return el;
+  }
+
   function layerDataGroup(layer) {
     const d = layer.data;
     const g = document.createElement("div");
@@ -524,7 +532,9 @@ const Panels = (() => {
     const title = {
       solid: "Solid", text: "Text", shape: "Shape", image: "Media", video: "Media",
       audio: "Audio", comp: "Source", adjust: null, nullobj: null,
+      camera: "Camera", light: "Light",
     }[layer.type];
+    if (title === undefined) return null;
     if (!title) return null;
     g.innerHTML = `<div class="prop-group-title">${title}</div>`;
 
@@ -770,6 +780,33 @@ const Panels = (() => {
       wrap.append(span, open);
       g.appendChild(dataRow("Comp", wrap));
     }
+
+    if (layer.type === "camera") {
+      g.appendChild(secHead("Camera"));
+      g.appendChild(dataRow("FOV (°)",
+        numInput(() => d.fov || 50, v => d.fov = clamp(v, 5, 170), { min:5, max:170, step:1 })));
+      g.appendChild(dataRow("Zoom",
+        numInput(() => d.zoom || 1, v => d.zoom = v, { min:0.1, max:10, step:0.01, decimals:2 })));
+      const hint = document.createElement("div");
+      hint.className = "dim"; hint.style.fontSize = "11px"; hint.style.padding = "4px 0";
+      hint.textContent = "Place Camera layer in Z=-500. Other layers get Z depth via positionZ.";
+      g.appendChild(hint);
+    }
+
+    if (layer.type === "light") {
+      g.appendChild(secHead("Light"));
+      g.appendChild(dataRow("Type", selectInput(
+        [["ambient","Ambient"],["point","Point"],["directional","Directional"]],
+        () => d.lightType || "point", v => d.lightType = v)));
+      g.appendChild(dataRow("Intensity",
+        numInput(() => d.intensity || 100, v => d.intensity = clamp(v,0,300), { min:0, max:300, step:1 })));
+      g.appendChild(dataRow("Color", colorInput(() => d.color || "#ffffff", v => d.color = v)));
+      if (d.lightType === "directional") {
+        g.appendChild(dataRow("Angle",
+          numInput(() => d.angle || 135, v => d.angle = v, { min:0, max:360, step:1 })));
+      }
+    }
+
     return g;
   }
 
@@ -791,6 +828,11 @@ const Panels = (() => {
       if (l.id !== layer.id && !Layers.wouldCycle(layer, l.id)) opts.push([l.id, l.name]);
     });
     g.appendChild(dataRow("Parent", selectInput(opts, () => layer.parent || "", v => layer.parent = v || null)));
+
+    // positionZ (shown for non-audio layers)
+    if (layer.type !== "audio" && layer.props.positionZ) {
+      g.appendChild(propRow(layer, "positionZ", [scalarScrub(layer, "positionZ", "Z", { min: -5000, max: 5000, step: 1 })]));
+    }
 
     g.appendChild(pairRow("Time",
       numInput(() => layer.stretch ?? 100, v => layer.stretch = clamp(v, 1, 1000), { label: "stretch %", min: 1, max: 1000 }),
