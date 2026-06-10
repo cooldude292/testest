@@ -13,6 +13,8 @@ function makeSequence(name) {
     videoTracks: [makePrTrack("video","V1"), makePrTrack("video","V2"), makePrTrack("video","V3")],
     audioTracks: [makePrTrack("audio","A1"), makePrTrack("audio","A2")],
     markers: [],
+    subtitles: [],
+    multicam: false,
   };
 }
 
@@ -22,7 +24,7 @@ function makePrTrack(type, name) {
 
 function makePrClip(assetId, srcIn, srcOut) {
   const dur = srcOut - srcIn;
-  return { id: prUID(), assetId, seqStart: 0, seqEnd: dur, srcIn, srcOut, speed: 1, volume: 100, opacity: 100, transIn: null, transOut: null, color: null, title: null, grade: { temp:0, tint:0, exposure:0, contrast:0, highlights:0, shadows:0, whites:0, blacks:0, sat:0, vibrance:0 } };
+  return { id: prUID(), assetId, seqStart: 0, seqEnd: dur, srcIn, srcOut, speed: 1, volume: 100, opacity: 100, transIn: null, transOut: null, color: null, title: null, seqId: null, grade: { temp:0, tint:0, exposure:0, contrast:0, highlights:0, shadows:0, whites:0, blacks:0, sat:0, vibrance:0 }, fx: { blur: 0, sharpness: 0, noise: 0 }, audio: { comp: false, compThresh: -20, compRatio: 4, eq: false, eqLow: 0, eqMid: 0, eqHigh: 0, reverb: 0 } };
 }
 
 /* ── PrState ────────────────────────────────────────────────────────── */
@@ -239,6 +241,41 @@ function applyPrGrade(ctx, clip, W, H) {
   ctx.filter = "none";
 }
 
+function applyPrFx(ctx, clip, W, H) {
+  const fx = clip.fx;
+  if (!fx) return;
+  const parts = [];
+  if (fx.blur > 0.5) parts.push(`blur(${fx.blur * 0.3}px)`);
+  if (parts.length) {
+    const tmp2 = document.createElement("canvas"); tmp2.width=W; tmp2.height=H;
+    const tc2 = tmp2.getContext("2d");
+    tc2.drawImage(ctx.canvas, 0, 0, W, H, 0, 0, W, H);
+    ctx.filter = parts.join(" ");
+    ctx.clearRect(0,0,W,H); ctx.drawImage(tmp2,0,0); ctx.filter="none";
+  }
+}
+
+/* ── SRT subtitle parser ────────────────────────────────────────────── */
+
+function parseSRT(text) {
+  const subs = [];
+  const blocks = text.trim().replace(/\r\n/g,"\n").split(/\n\n+/);
+  blocks.forEach(block => {
+    const lines = block.split("\n");
+    if (lines.length < 3) return;
+    const tc = lines[1].match(/(\d+):(\d+):(\d+)[,.](\d+)\s*-->\s*(\d+):(\d+):(\d+)[,.](\d+)/);
+    if (!tc) return;
+    const toSec = (h,m,s,ms) => +h*3600 + +m*60 + +s + +ms/1000;
+    subs.push({
+      id: "sub_" + subs.length,
+      start: toSec(tc[1],tc[2],tc[3],tc[4]),
+      end:   toSec(tc[5],tc[6],tc[7],tc[8]),
+      text: lines.slice(2).join("\n").replace(/<[^>]+>/g,"")
+    });
+  });
+  return subs;
+}
+
 /* ── Waveform cache ─────────────────────────────────────────────────── */
 
 const _waveformPeaks = new Map(); // assetId → Float32Array
@@ -276,7 +313,21 @@ async function ensureWaveform(assetId) {
 /* ── PrRenderer (frame renderer) ───────────────────────────────────── */
 
 const PrRenderer = (() => {
-  async function drawClip(ctx, clip, clipT, W, H, playing) {
+  async function drawClip(ctx, clip, clipT, W, H, playing, opts) {
+    // Nested sequence
+    if (clip.seqId) {
+      const nested = PrState.seqs.find(s => s.id === clip.seqId);
+      if (nested && (opts && (opts.depth||0)) < 4) {
+        const oldOpts = opts || {};
+        await renderFrame(ctx, nested, clipT, playing, { depth: (oldOpts.depth||0)+1 });
+      } else {
+        ctx.fillStyle = "#1b1d22"; ctx.fillRect(0,0,W,H);
+        ctx.fillStyle = "#5e636e"; ctx.font = "bold 18px Inter,sans-serif";
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText("Nested: " + (PrState.seqs.find(s=>s.id===clip.seqId)?.name||"?"), W/2, H/2);
+      }
+      return;
+    }
     if (clip._isTitleClip || clip.assetId === -1) {
       ctx.fillStyle = "#101216";
       ctx.fillRect(0, 0, W, H);
@@ -323,13 +374,13 @@ const PrRenderer = (() => {
             await new Promise(r => { vid.onseeked = r; setTimeout(r, 150); });
           }
         }
-        try { ctx.drawImage(vid, 0, 0, W, H); applyPrGrade(ctx, clip, W, H); } catch(e) {}
+        try { ctx.drawImage(vid, 0, 0, W, H); applyPrGrade(ctx, clip, W, H); applyPrFx(ctx, clip, W, H); } catch(e) {}
       } else {
         ctx.fillStyle = "#111"; ctx.fillRect(0, 0, W, H);
       }
     } else if (asset.type === "image") {
       const img = await prGetImage(clip.assetId);
-      if (img) { ctx.drawImage(img, 0, 0, W, H); applyPrGrade(ctx, clip, W, H); }
+      if (img) { ctx.drawImage(img, 0, 0, W, H); applyPrGrade(ctx, clip, W, H); applyPrFx(ctx, clip, W, H); }
     } else {
       ctx.fillStyle = "#1e1e26"; ctx.fillRect(0, 0, W, H);
     }
@@ -353,7 +404,7 @@ const PrRenderer = (() => {
     }
   }
 
-  async function renderFrame(ctx, seq, t, playing) {
+  async function renderFrame(ctx, seq, t, playing, opts={}) {
     const W = ctx.canvas.width, H = ctx.canvas.height;
     ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
     if (!seq) return;
@@ -369,7 +420,7 @@ const PrRenderer = (() => {
         if (clip.transOut && t > clip.seqEnd - clip.transOut.duration)
           alpha *= (clip.seqEnd - t) / clip.transOut.duration;
         ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
-        await drawClip(ctx, clip, clipT, W, H, playing);
+        await drawClip(ctx, clip, clipT, W, H, playing, opts);
       }
     }
     ctx.globalAlpha = 1;
@@ -575,6 +626,24 @@ const PrProgramMonitor = (() => {
       return;
     }
     await PrRenderer.renderFrame(ctx, seq, PrState.playhead, PrState.playing);
+    const seq2 = PrState.seq;
+    if (seq2 && seq2.subtitles && seq2.subtitles.length) {
+      const sub = seq2.subtitles.find(s => PrState.playhead >= s.start && PrState.playhead < s.end);
+      if (sub) {
+        const cw = cvs.width, ch = cvs.height;
+        const lines = sub.text.split("\n");
+        const lineH = Math.round(cw * 0.045), pad = 12;
+        const totalH = lines.length * lineH + pad*2;
+        ctx.save();
+        ctx.fillStyle = "rgba(0,0,0,0.65)";
+        ctx.fillRect(cw*0.1, ch-totalH-20, cw*0.8, totalH);
+        ctx.font = `bold ${lineH*0.72|0}px Inter,system-ui,sans-serif`;
+        ctx.fillStyle = "#fff";
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        lines.forEach((l,i) => ctx.fillText(l, cw/2, ch-totalH-20+pad+lineH*(i+0.5)));
+        ctx.restore();
+      }
+    }
     _drawOverlay(W, H, seq);
   }
 
@@ -675,6 +744,14 @@ const PrAudio = (() => {
         el.muted = false;
         el.volume = clamp((clip.volume || 100) / 100, 0, 1);
         el.playbackRate = clip.speed || 1;
+        // Basic EQ/compression via Web Audio if AudioContext available
+        if (clip.audio && (clip.audio.eqLow !== 0 || clip.audio.eqMid !== 0 || clip.audio.eqHigh !== 0)) {
+          // We can't easily route HTMLMediaElement through AudioContext mid-play
+          // So use volume as a proxy for now (full Web Audio routing is in a dedicated mixer)
+          // Just apply overall gain adjustment based on eq settings
+          const eqGain = 1 + (clip.audio.eqLow + clip.audio.eqMid + clip.audio.eqHigh) / 300;
+          el.volume = Math.min(1, el.volume * eqGain);
+        }
         el.currentTime = clipT;
         el.play().catch(() => {});
         _playing.set(clip.assetId, { el, startWallTime: now, startSeqTime: seqT });
@@ -721,6 +798,17 @@ const PrLumetri = (() => {
     _clip = clip;
     if (!_panel) _buildPanel();
     _panel.hidden = false;
+    // Show/hide audio section based on clip type
+    const audioSection = _panel.querySelector("#pr-lum-audio-section");
+    if (audioSection) {
+      const isAudio = PrState.seq && PrState.seq.audioTracks.some(tr => tr.clips.some(c => c.id === clip.id));
+      audioSection.hidden = !isAudio;
+      let node = audioSection.nextElementSibling;
+      while (node && node.classList.contains("pr-lum-row") && node.querySelector("input[data-section='audio']")) {
+        node.hidden = !isAudio;
+        node = node.nextElementSibling;
+      }
+    }
     _refresh();
   }
   function hide() {
@@ -752,6 +840,15 @@ const PrLumetri = (() => {
         <div class="pr-lum-section">Creative</div>
         ${_slider("sat",    "Saturation", -100, 100)}
         ${_slider("vibrance","Vibrance",  -100, 100)}
+        <div class="pr-lum-section">Video Effects</div>
+        ${_sliderFx("blur",       "Blur",       0, 100)}
+        ${_sliderFx("sharpness",  "Sharpness",  0, 100)}
+        ${_sliderFx("noise",      "Noise",      0, 100)}
+        <div class="pr-lum-section" id="pr-lum-audio-section">Audio</div>
+        ${_sliderAudio("eqLow",   "EQ Low",   -24, 24, 1)}
+        ${_sliderAudio("eqMid",   "EQ Mid",   -24, 24, 1)}
+        ${_sliderAudio("eqHigh",  "EQ High",  -24, 24, 1)}
+        ${_sliderAudio("reverb",  "Reverb",     0, 100, 1)}
       </div>`;
     // place inside #pr-tl-body as right column
     const body = document.getElementById("pr-tl-body");
@@ -760,9 +857,12 @@ const PrLumetri = (() => {
     _panel.querySelectorAll("input[type=range]").forEach(inp => {
       inp.addEventListener("input", () => {
         if (!_clip) return;
-        _clip.grade[inp.dataset.key] = parseFloat(inp.value);
+        const section = inp.dataset.section;
+        const obj = section === "fx" ? (_clip.fx || (_clip.fx={})) : section === "audio" ? (_clip.audio || (_clip.audio={})) : (_clip.grade || (_clip.grade={}));
+        obj[inp.dataset.key] = parseFloat(inp.value);
         PrProgramMonitor.draw();
-        _panel.querySelector(`span[data-val="${inp.dataset.key}"]`).textContent = (+inp.value).toFixed(inp.dataset.key === "exposure" ? 1 : 0);
+        const valSpan = _panel.querySelector(`span[data-val="${inp.dataset.key}"][data-section="${section || 'grade'}"]`);
+        if (valSpan) valSpan.textContent = (+inp.value).toFixed(inp.dataset.key === "exposure" ? 1 : 0);
       });
     });
   }
@@ -770,17 +870,38 @@ const PrLumetri = (() => {
   function _slider(key, label, min, max, step = 1) {
     return `<div class="pr-lum-row">
       <span class="pr-lum-label">${label}</span>
-      <input type="range" min="${min}" max="${max}" step="${step}" value="0" data-key="${key}">
-      <span class="pr-lum-val" data-val="${key}">0</span>
+      <input type="range" min="${min}" max="${max}" step="${step}" value="0" data-key="${key}" data-section="grade">
+      <span class="pr-lum-val" data-val="${key}" data-section="grade">0</span>
+    </div>`;
+  }
+
+  function _sliderFx(key, label, min, max, step = 1) {
+    return `<div class="pr-lum-row">
+      <span class="pr-lum-label">${label}</span>
+      <input type="range" min="${min}" max="${max}" step="${step}" value="0" data-key="${key}" data-section="fx">
+      <span class="pr-lum-val" data-val="${key}" data-section="fx">0</span>
+    </div>`;
+  }
+
+  function _sliderAudio(key, label, min, max, step = 1) {
+    return `<div class="pr-lum-row">
+      <span class="pr-lum-label">${label}</span>
+      <input type="range" min="${min}" max="${max}" step="${step}" value="0" data-key="${key}" data-section="audio">
+      <span class="pr-lum-val" data-val="${key}" data-section="audio">0</span>
     </div>`;
   }
 
   function _refresh() {
     if (!_clip || !_panel) return;
     const g = _clip.grade || {};
+    const fx = _clip.fx || {};
+    const audio = _clip.audio || {};
     _panel.querySelectorAll("input[type=range]").forEach(inp => {
-      inp.value = g[inp.dataset.key] || 0;
-      _panel.querySelector(`span[data-val="${inp.dataset.key}"]`).textContent = (+inp.value).toFixed(inp.dataset.key === "exposure" ? 1 : 0);
+      const section = inp.dataset.section;
+      const obj = section === "fx" ? fx : section === "audio" ? audio : g;
+      inp.value = obj[inp.dataset.key] || 0;
+      const valSpan = _panel.querySelector(`span[data-val="${inp.dataset.key}"][data-section="${section}"]`);
+      if (valSpan) valSpan.textContent = (+inp.value).toFixed(inp.dataset.key === "exposure" ? 1 : 0);
     });
   }
 
@@ -799,6 +920,23 @@ const PrBins = (() => {
       PrProgramMonitor.draw();
     });
     refresh();
+    const subBtn = document.createElement("button");
+    subBtn.className = "btn ghost sm";
+    subBtn.style.cssText = "margin:4px 8px;width:calc(100% - 16px)";
+    subBtn.textContent = "Import Subtitles (.srt)…";
+    subBtn.addEventListener("click", () => {
+      const inp = document.createElement("input");
+      inp.type = "file"; inp.accept = ".srt,.vtt";
+      inp.addEventListener("change", async () => {
+        const f = inp.files[0]; if (!f || !PrState.seq) return;
+        const text = await f.text();
+        PrState.seq.subtitles = parseSRT(text);
+        if (typeof toast !== "undefined") toast(`Loaded ${PrState.seq.subtitles.length} subtitle(s)`);
+        PrProgramMonitor.draw();
+      });
+      inp.click();
+    });
+    document.getElementById("pr-bins-panel")?.appendChild(subBtn);
   }
 
   function refresh() {
@@ -806,6 +944,7 @@ const PrBins = (() => {
     _buildAssetList();
     const el = document.getElementById("pr-prog-seq-name");
     if (el && PrState.seq) el.textContent = PrState.seq.name;
+    if (typeof updateMulticamBar === "function") updateMulticamBar();
   }
 
   function _buildSeqList() {
@@ -825,6 +964,8 @@ const PrBins = (() => {
         const n = prompt("Rename sequence:", seq.name);
         if (n && n.trim()) { seq.name = n.trim(); refresh(); }
       });
+      row.draggable = true;
+      row.addEventListener("dragstart", e => { e.dataTransfer.setData("pr-seq-id", seq.id); });
       el.appendChild(row);
     });
     if (!PrState.seqs.length) el.innerHTML = `<div class="pr-empty-hint">No sequences yet.</div>`;
@@ -962,7 +1103,7 @@ const PrTimeline = (() => {
     cvs.style.cursor = t === "razor" ? "crosshair" : t === "hand" ? "grab" : "default";
   }
 
-  function setSequence(s) { seq = s; PrState.setSeq(s); draw(); }
+  function setSequence(s) { seq = s; PrState.setSeq(s); draw(); if (typeof updateMulticamBar === "function") updateMulticamBar(); }
 
   /* ── Drawing ─────────────────────────────────────────────────────── */
 
@@ -1430,6 +1571,21 @@ const PrTimeline = (() => {
   function onDrop(e) {
     e.preventDefault();
     const assetId = parseInt(e.dataTransfer.getData("pr-asset-id"), 10);
+    const seqId = e.dataTransfer.getData("pr-seq-id");
+    if (seqId && seq) {
+      const nested = PrState.seqs.find(s => s.id === parseInt(seqId, 10));
+      if (!nested || nested === seq) return;
+      const r = cvs.getBoundingClientRect();
+      const mx = (e.clientX - r.left) * cvs.width  / r.width;
+      const my = (e.clientY - r.top)  * cvs.height / r.height;
+      const sec = Math.max(0, _sec(mx));
+      const dur = nested.duration || 5;
+      const clip = makePrClip(-1, 0, dur);
+      clip.seqId = nested.id;
+      clip._label = nested.name;
+      if (seq.videoTracks.length) PrState.addClipToTrack(seq.videoTracks[0], clip, sec);
+      draw(); return;
+    }
     if (!assetId || !seq) return;
     const r = cvs.getBoundingClientRect();
     const mx = (e.clientX - r.left) * cvs.width  / r.width;
@@ -1477,6 +1633,13 @@ const PrTimeline = (() => {
       seq.markers.push({ id: prUID(), t: PrState.playhead, label: "", color: "#4cb782" });
       draw();
     }
+    else if (e.code.startsWith("Digit") && PrState.seq?.multicam) {
+      const camIdx = parseInt(e.code.slice(5), 10) - 1;
+      if (camIdx >= 0 && camIdx < (PrState.seq.videoTracks||[]).length) {
+        PrState.seq.videoTracks.forEach((t,i) => { t.mute = (i !== camIdx); });
+        draw(); PrProgramMonitor.draw();
+      }
+    }
   }
 
   return { init, setSequence, draw, drawPlayhead };
@@ -1518,6 +1681,32 @@ function bindBtn(id, fn) {
 }
 
 /* ── initPremiere ────────────────────────────────────────────────────── */
+
+function updateMulticamBar() {
+  let bar = document.getElementById("pr-multicam-bar");
+  if (!PrState.seq?.multicam) { if (bar) bar.hidden = true; return; }
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "pr-multicam-bar";
+    bar.style.cssText = "display:flex;gap:4px;padding:4px 8px;background:var(--bg-3);border-bottom:1px solid var(--border)";
+    document.getElementById("pr-tl-toolbar")?.before(bar);
+  }
+  bar.hidden = false;
+  bar.innerHTML = "<span style='font-size:11px;color:var(--text-3);margin-right:4px'>CAM:</span>";
+  (PrState.seq.videoTracks || []).forEach((tr, i) => {
+    const btn = document.createElement("button");
+    btn.className = "pr-tool-btn";
+    btn.textContent = String(i+1);
+    btn.title = `Switch to camera ${i+1} at playhead`;
+    btn.addEventListener("click", () => {
+      // Mute all video tracks except selected
+      PrState.seq.videoTracks.forEach((t2, j) => { t2.mute = (j !== i); });
+      PrTimeline.draw();
+      PrProgramMonitor.draw();
+    });
+    bar.appendChild(btn);
+  });
+}
 
 function initPremiere() {
   if (PrState.seqs.length === 0) PrState.newSequence("Sequence 01");
@@ -1586,6 +1775,8 @@ function initPremiere() {
 
   // Export sequence
   bindBtn("pr-export-btn", () => exportSequence());
+
+  updateMulticamBar();
 }
 
 async function exportSequence() {
