@@ -315,6 +315,24 @@ const UICommands = {
   },
 };
 
+/* ── LRU cache helper ── */
+function makeLRU(maxSize) {
+  const map = new Map();
+  return {
+    get(key) { if (!map.has(key)) return undefined; const v = map.get(key); map.delete(key); map.set(key, v); return v; },
+    set(key, val) {
+      if (map.has(key)) map.delete(key);
+      else if (map.size >= maxSize) { const first = map.keys().next().value; map.delete(first); }
+      map.set(key, val);
+    },
+    has(key) { return map.has(key); },
+    delete(key) { map.delete(key); },
+    get size() { return map.size; },
+    values() { return map.values(); },
+    forEach(fn) { map.forEach(fn); },
+  };
+}
+
 /* ── IndexedDB project library ── */
 const ProjectLibrary = (() => {
   let db = null;
@@ -1361,6 +1379,33 @@ const Settings = (() => {
       mk("", chk("showTooltips", "Show tooltips")),
       mk("", chk("snapGrid", "Snap to grid")),
     );
+
+    // Performance section
+    const perfHead = Object.assign(document.createElement("h4"), { textContent: "Performance", className: "settings-head" });
+    body.appendChild(perfHead);
+
+    const cachedAssets = typeof assetCache !== "undefined" ? assetCache.size : 0;
+    const estMem = typeof assetCache !== "undefined" ? (cachedAssets * 2).toFixed(1) + " MB (est.)" : "N/A";
+
+    const perfInfo = document.createElement("div");
+    perfInfo.className = "form-row";
+    perfInfo.style.cssText = "flex-direction:column;align-items:flex-start;gap:4px";
+    perfInfo.innerHTML = `
+      <div style="font-size:12px;color:var(--text-2)">Cached assets: <strong>${cachedAssets}</strong></div>
+      <div style="font-size:12px;color:var(--text-2)">Est. memory: <strong>${estMem}</strong></div>`;
+    body.appendChild(perfInfo);
+
+    const clearCacheBtn = document.createElement("button");
+    clearCacheBtn.className = "btn ghost sm";
+    clearCacheBtn.textContent = "Clear Caches";
+    clearCacheBtn.style.marginTop = "6px";
+    clearCacheBtn.addEventListener("click", () => {
+      if (typeof assetCache !== "undefined") assetCache.forEach((v, k) => assetCache.delete(k));
+      RamPreview.clear();
+      toast("Caches cleared");
+      Settings.openModal(); // refresh display
+    });
+    body.appendChild(clearCacheBtn);
   }
 
   function closeModal() {
@@ -1931,6 +1976,181 @@ function buildDemo() {
   App.comp.markers = [{ id: uid(), t: 2, label: "intro done" }];
 }
 
+/* ── Auto-save (IndexedDB, 2-minute interval) ── */
+const AutoSave = (() => {
+  const KEY = "lumen-autosave-v1";
+  const INTERVAL_MS = 120_000; // 2 minutes
+  let _timer = null;
+  let _indicator = null;
+
+  function _openDB() {
+    return new Promise((res, rej) => {
+      const req = indexedDB.open("lumen-autosave", 1);
+      req.onupgradeneeded = e => e.target.result.createObjectStore("saves", { keyPath:"id" });
+      req.onsuccess = e => res(e.target.result);
+      req.onerror = e => rej(e.target.error);
+    });
+  }
+
+  async function save() {
+    if (!App.project) return;
+    try {
+      const db = await _openDB();
+      const data = JSON.stringify(App.project);
+      const tx = db.transaction("saves", "readwrite");
+      tx.objectStore("saves").put({ id: KEY, data, savedAt: Date.now(), name: App.project.name });
+      await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
+      _flash();
+    } catch(e) { /* silent */ }
+  }
+
+  async function check() {
+    try {
+      const db = await _openDB();
+      return await new Promise(res => {
+        const req = db.transaction("saves", "readonly").objectStore("saves").get(KEY);
+        req.onsuccess = e => res(e.target.result || null);
+        req.onerror = () => res(null);
+      });
+    } catch(e) { return null; }
+  }
+
+  async function clear() {
+    try {
+      const db = await _openDB();
+      const tx = db.transaction("saves", "readwrite");
+      tx.objectStore("saves").delete(KEY);
+    } catch(e) {}
+  }
+
+  function _flash() {
+    if (!_indicator) {
+      _indicator = document.getElementById("autosave-indicator");
+    }
+    if (!_indicator) return;
+    _indicator.textContent = "Auto-saved";
+    _indicator.classList.add("visible");
+    setTimeout(() => _indicator.classList.remove("visible"), 2500);
+  }
+
+  function init() {
+    _timer = setInterval(save, INTERVAL_MS);
+    App.on("project", () => { /* dirty flag set, will be saved on next interval */ });
+  }
+
+  return { init, save, check, clear };
+})();
+
+/* ── Export Queue ── */
+const ExportQueue = (() => {
+  let _queue = []; // array of { compId, format, quality, scale, name }
+  let _running = false;
+  let _overlay = null;
+
+  function open() {
+    if (!_overlay) _buildOverlay();
+    _overlay.hidden = false;
+    _refresh();
+  }
+  function close() { if (_overlay) _overlay.hidden = true; }
+
+  function _buildOverlay() {
+    _overlay = document.createElement("div");
+    _overlay.className = "overlay";
+    _overlay.id = "queue-overlay";
+    _overlay.innerHTML = `
+      <div class="modal" style="width:520px">
+        <div class="modal-head">
+          <span>Export Queue</span>
+          <button class="icon-btn sm" id="queue-close" title="Close">
+            <svg viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <div class="modal-body" style="min-height:200px">
+          <div id="queue-list" style="margin-bottom:12px"></div>
+          <div class="form-row">
+            <label>Add comp</label>
+            <select id="queue-comp-sel" class="export-sel"></select>
+          </div>
+          <div class="form-row">
+            <label>Format</label>
+            <select id="queue-fmt"><option value="mp4">MP4</option><option value="webm">WebM</option><option value="pngseq">PNG seq</option></select>
+          </div>
+          <button class="btn ghost sm" id="queue-add-btn" style="margin-top:8px">+ Add to Queue</button>
+        </div>
+        <div class="modal-foot">
+          <span id="queue-status" style="flex:1;font-size:12px;color:var(--text-3)"></span>
+          <button class="btn ghost" id="queue-clear-btn">Clear</button>
+          <button class="btn primary" id="queue-run-btn">Render All</button>
+        </div>
+      </div>`;
+    document.body.appendChild(_overlay);
+    document.getElementById("queue-close").addEventListener("click", close);
+    _overlay.addEventListener("pointerdown", e => { if (e.target === _overlay) close(); });
+    document.getElementById("queue-add-btn").addEventListener("click", () => {
+      const compId = document.getElementById("queue-comp-sel").value;
+      const fmt = document.getElementById("queue-fmt").value;
+      const comp = App.project.comps.find(c => c.id === compId);
+      if (!comp) return;
+      _queue.push({ compId, format: fmt, scale: 1, name: comp.name });
+      _refresh();
+    });
+    document.getElementById("queue-clear-btn").addEventListener("click", () => { _queue = []; _refresh(); });
+    document.getElementById("queue-run-btn").addEventListener("click", () => _runAll());
+  }
+
+  function _refresh() {
+    if (!_overlay) return;
+    const sel = document.getElementById("queue-comp-sel");
+    if (sel) {
+      sel.innerHTML = App.project.comps.map(c => `<option value="${c.id}">${c.name}</option>`).join("");
+    }
+    const list = document.getElementById("queue-list"); if (!list) return;
+    if (!_queue.length) { list.innerHTML = `<div class="empty-hint pad">Queue is empty. Add comps to render.</div>`; return; }
+    list.innerHTML = _queue.map((item, i) =>
+      `<div class="queue-item">
+        <span style="flex:1">${item.name} · ${item.format.toUpperCase()}</span>
+        <button class="btn ghost sm" onclick="ExportQueue._remove(${i})">✕</button>
+      </div>`).join("");
+  }
+
+  function _remove(i) { _queue.splice(i, 1); _refresh(); }
+
+  async function _runAll() {
+    if (_running || !_queue.length) return;
+    _running = true;
+    const status = document.getElementById("queue-status");
+    const runBtn = document.getElementById("queue-run-btn");
+    if (runBtn) runBtn.disabled = true;
+    const total = _queue.length;
+    for (let i = 0; i < _queue.length; i++) {
+      const item = _queue[i];
+      if (status) status.textContent = `Rendering ${i+1}/${total}: ${item.name}…`;
+      const comp = App.project.comps.find(c => c.id === item.compId);
+      if (!comp) continue;
+      try {
+        const prevComp = App.project.activeCompId;
+        App.project.activeCompId = item.compId;
+        // Use existing export function
+        if (typeof startExport === "function") {
+          await new Promise(res => {
+            startExport({ format: item.format, scale: item.scale, onDone: res });
+          });
+        }
+        App.project.activeCompId = prevComp;
+      } catch(e) { if (status) status.textContent = `Error: ${e.message}`; }
+    }
+    _queue = [];
+    _running = false;
+    if (runBtn) runBtn.disabled = false;
+    if (status) status.textContent = `All done!`;
+    _refresh();
+    setTimeout(() => { if (status) status.textContent = ""; }, 3000);
+  }
+
+  return { open, close, _remove };
+})();
+
 /* ── boot ── */
 function initApp() {
   Settings.load();
@@ -1938,6 +2158,36 @@ function initApp() {
   App.project = defaultProject();
   App.project.name = "Welcome to Lumen";
   buildDemo();
+
+  // Crash recovery check
+  (async () => {
+    const saved = await AutoSave.check();
+    if (!saved) return;
+    const minutesAgo = Math.round((Date.now() - saved.savedAt) / 60000);
+    if (minutesAgo > 120) { AutoSave.clear(); return; } // ignore saves older than 2h
+    const overlay = document.getElementById("crash-recovery-overlay");
+    const label = document.getElementById("crash-recovery-label");
+    if (overlay && label) {
+      label.textContent = `Auto-saved project "${saved.name}" (${minutesAgo < 1 ? "just now" : minutesAgo + " min ago"})`;
+      overlay.hidden = false;
+      document.getElementById("crash-recovery-restore").addEventListener("click", async () => {
+        try {
+          loadProjectJSON(JSON.parse(saved.data));
+          document.getElementById("project-name").value = App.project.name;
+          if (typeof Viewport !== "undefined") Viewport.fit();
+          if (typeof Timeline !== "undefined") Timeline.fit();
+          toast("Project restored from auto-save");
+        } catch(e) { toast("Restore failed: " + e.message); }
+        overlay.hidden = true;
+        AutoSave.clear();
+      });
+      document.getElementById("crash-recovery-dismiss").addEventListener("click", () => {
+        overlay.hidden = true;
+        AutoSave.clear();
+      });
+    }
+  })();
+  AutoSave.init();
 
   Panels.init();
   Timeline.init();
@@ -1963,6 +2213,7 @@ function initApp() {
   document.getElementById("btn-save").addEventListener("click", saveProject);
   document.getElementById("btn-open").addEventListener("click", () => document.getElementById("file-open").click());
   document.getElementById("btn-export").addEventListener("click", () => Exporter.open());
+  document.getElementById("btn-export-queue")?.addEventListener("click", ExportQueue.open);
   document.getElementById("btn-help").addEventListener("click", showShortcuts);
   document.getElementById("shortcuts-close").addEventListener("click", () => {
     document.getElementById("shortcuts-overlay").hidden = true;

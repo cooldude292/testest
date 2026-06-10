@@ -956,3 +956,29 @@ canvas.pen-active { cursor: crosshair; }
 }
 .pr-ctx-item:hover { background: var(--hover); color: var(--text); }
 .pr-ctx-sep { height: 1px; background: var(--border); margin: 3px 0; }
+
+/* Auto-save indicator */
+.autosave-ind {
+  font-size: 11px;
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity 0.4s;
+  pointer-events: none;
+  padding: 0 8px;
+}
+.autosave-ind.visible { opacity: 1; }
+
+/* Export queue */
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg-3);
+  border-radius: 4px;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+/* Crash recovery */
+#crash-recovery-overlay .modal p { line-height: 1.5; }
