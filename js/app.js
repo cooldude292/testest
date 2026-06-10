@@ -400,6 +400,14 @@ const ProjectLibrary = (() => {
   return { list, save, load, remove };
 })();
 
+function trackRecent(name, id) {
+  try {
+    const r = JSON.parse(localStorage.getItem("lumen-recent") || "[]");
+    const updated = [{ name, id, at: Date.now() }, ...r.filter(x => x.id !== id)].slice(0, 10);
+    localStorage.setItem("lumen-recent", JSON.stringify(updated));
+  } catch(e) {}
+}
+
 /* ── Library modal ── */
 const LibraryModal = (() => {
   let overlay, listEl, nameInput;
@@ -413,6 +421,26 @@ const LibraryModal = (() => {
       if (!items.length) {
         listEl.innerHTML = '<div class="empty-hint pad">No saved projects yet.<br>Type a name below and click Save.</div>';
         return;
+      }
+      const recents = (() => { try { return JSON.parse(localStorage.getItem("lumen-recent") || "[]").slice(0, 5); } catch(e) { return []; } })();
+      if (recents.length) {
+        const recentDiv = document.createElement("div");
+        recentDiv.innerHTML = `<div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);margin-bottom:6px">Recent</div>`;
+        recents.forEach(r => {
+          const btn = document.createElement("div");
+          btn.className = "lib-item";
+          btn.style.cursor = "pointer";
+          const ago = Math.round((Date.now() - r.at) / 60000);
+          const agoStr = ago < 60 ? ago + "m ago" : Math.round(ago/60) + "h ago";
+          btn.innerHTML = `<div class="lib-info"><div class="lib-name">${r.name}</div><div class="lib-date dim">${agoStr}</div></div>`;
+          btn.addEventListener("click", async () => {
+            const entry = await ProjectLibrary.load(r.id).catch(() => null);
+            if (entry) { loadProjectJSON(entry.data); LibraryModal.close(); toast("Loaded: " + entry.name); }
+            else toast("Project not found in library");
+          });
+          recentDiv.appendChild(btn);
+        });
+        listEl.appendChild(recentDiv);
       }
       items.forEach(p => {
         const row = document.createElement("div");
@@ -438,6 +466,7 @@ const LibraryModal = (() => {
             const entry = await ProjectLibrary.load(p.id);
             if (!entry) { toast("Not found"); return; }
             loadProjectJSON(entry.data);
+            trackRecent(p.name, p.id);
             document.getElementById("project-name").value = App.project.name;
             Viewport.fit(); Timeline.fit();
             toast("Loaded: " + entry.name);
@@ -2324,6 +2353,12 @@ function initApp() {
   });
   App.on("comps", () => {
     document.title = (App.dirty ? "● " : "") + App.project.name + " — Lumen";
+  });
+
+  let _propsRafId = null;
+  App.on("props", () => {
+    if (_propsRafId) cancelAnimationFrame(_propsRafId);
+    _propsRafId = requestAnimationFrame(() => { _propsRafId = null; Panels.refreshValues(); });
   });
 
   /* autosave every 25s + before unload */

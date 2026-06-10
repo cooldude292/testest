@@ -277,10 +277,40 @@ async function ensureWaveform(assetId) {
 
 const PrRenderer = (() => {
   async function drawClip(ctx, clip, clipT, W, H, playing) {
+    if (clip._isTitleClip || clip.assetId === -1) {
+      ctx.fillStyle = "#101216";
+      ctx.fillRect(0, 0, W, H);
+      if (clip.title) {
+        ctx.font = "bold 52px Inter, system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(clip.title, W/2, H/2, W - 80);
+      }
+      return;
+    }
     const asset = prAsset(clip.assetId);
     if (!asset) {
       ctx.fillStyle = clip.color || "#2a2a3a";
       ctx.fillRect(0, 0, W, H);
+      if (clip.title) {
+        ctx.save();
+        ctx.font = "bold 48px Inter, system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        const padding = 20;
+        const textMetrics = ctx.measureText(clip.title);
+        const tw = textMetrics.width + padding * 2;
+        const th = 60;
+        const tx = W / 2;
+        const ty = H - 30;
+        ctx.fillStyle = "rgba(0,0,0,0.55)";
+        ctx.roundRect ? ctx.roundRect(tx - tw/2, ty - th, tw, th, 8) : ctx.rect(tx - tw/2, ty - th, tw, th);
+        ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(clip.title, tx, ty - 8, W - 40);
+        ctx.restore();
+      }
       return;
     }
     if (asset.type === "video") {
@@ -302,6 +332,24 @@ const PrRenderer = (() => {
       if (img) { ctx.drawImage(img, 0, 0, W, H); applyPrGrade(ctx, clip, W, H); }
     } else {
       ctx.fillStyle = "#1e1e26"; ctx.fillRect(0, 0, W, H);
+    }
+    if (clip.title) {
+      ctx.save();
+      ctx.font = "bold 48px Inter, system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      const padding = 20;
+      const textMetrics = ctx.measureText(clip.title);
+      const tw = textMetrics.width + padding * 2;
+      const th = 60;
+      const tx = W / 2;
+      const ty = H - 30;
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.roundRect ? ctx.roundRect(tx - tw/2, ty - th, tw, th, 8) : ctx.rect(tx - tw/2, ty - th, tw, th);
+      ctx.fill();
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(clip.title, tx, ty - 8, W - 40);
+      ctx.restore();
     }
   }
 
@@ -879,6 +927,22 @@ const PrTimeline = (() => {
     bindBtn("pr-add-vtrack",  () => { seq?.videoTracks.push(makePrTrack("video",`V${seq.videoTracks.length+1}`)); draw(); });
     bindBtn("pr-add-atrack",  () => { seq?.audioTracks.push(makePrTrack("audio",`A${seq.audioTracks.length+1}`)); draw(); });
     document.addEventListener("keydown", onKeyDown);
+    const titleBtn = document.createElement("button");
+    titleBtn.className = "pr-tool-btn";
+    titleBtn.title = "Add title clip to V1 at playhead";
+    titleBtn.textContent = "T+";
+    titleBtn.addEventListener("click", () => {
+      const seq = PrState.seq; if (!seq || !seq.videoTracks.length) return;
+      const t = prompt("Title text:", "Title");
+      if (!t || !t.trim()) return;
+      const dur = 5;
+      const clip = makePrClip(-1, 0, dur); // assetId -1 = title-only clip
+      clip.title = t.trim();
+      clip._isTitleClip = true;
+      PrState.addClipToTrack(seq.videoTracks[0], clip, PrState.playhead);
+      PrTimeline.draw();
+    });
+    document.getElementById("pr-tl-toolbar")?.appendChild(titleBtn);
     draw();
   }
 
@@ -933,6 +997,28 @@ const PrTimeline = (() => {
       if (x < LABEL_W || x > W) continue;
       ctx.beginPath(); ctx.moveTo(x, RULER_H - 5); ctx.lineTo(x, RULER_H); ctx.stroke();
       if (x > LABEL_W + 2) ctx.fillText(prFmtTC(t), x + 2, RULER_H - 8);
+    }
+    // Draw sequence markers
+    if (seq.markers) {
+      seq.markers.forEach(m => {
+        const mx = LABEL_W + m.t * PrState.zoom - PrState.scrollX;
+        if (mx < LABEL_W || mx > W) return;
+        ctx.save();
+        ctx.fillStyle = m.color || "#4cb782";
+        ctx.beginPath();
+        ctx.moveTo(mx-6, 2);
+        ctx.lineTo(mx+6, 2);
+        ctx.lineTo(mx, 14);
+        ctx.closePath();
+        ctx.fill();
+        if (m.label) {
+          ctx.font = "10px Inter, system-ui, sans-serif";
+          ctx.fillStyle = "#fff";
+          ctx.textAlign = "left";
+          ctx.fillText(m.label, mx+8, 13);
+        }
+        ctx.restore();
+      });
     }
   }
 
@@ -1290,6 +1376,12 @@ const PrTimeline = (() => {
       null,
       ["Speed / Duration…", () => _speedDlg(clip)],
       ["Clip Properties…",  () => _propsDlg(clip)],
+      null,
+      ["Set Title…", () => {
+        const t = prompt("Title text (blank to remove):", clip.title || "");
+        if (t !== null) clip.title = t.trim() || null;
+        draw();
+      }],
     ];
     items.forEach(item => {
       if (!item) { const s = document.createElement("div"); s.className = "pr-ctx-sep"; m.appendChild(s); return; }
@@ -1379,6 +1471,12 @@ const PrTimeline = (() => {
     else if (e.code === "Delete" || e.code === "Backspace") _deleteSelected();
     else if (e.code === "ArrowLeft")  { PrState.playhead -= e.shiftKey ? 1 : 1/(seq?.fps||30); PrProgramMonitor.draw(); draw(); }
     else if (e.code === "ArrowRight") { PrState.playhead += e.shiftKey ? 1 : 1/(seq?.fps||30); PrProgramMonitor.draw(); draw(); }
+    else if (e.code === "KeyM") {
+      const seq = PrState.seq; if (!seq) return;
+      if (!seq.markers) seq.markers = [];
+      seq.markers.push({ id: prUID(), t: PrState.playhead, label: "", color: "#4cb782" });
+      draw();
+    }
   }
 
   return { init, setSequence, draw, drawPlayhead };
