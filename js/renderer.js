@@ -82,36 +82,101 @@ const Renderer = (() => {
     const y0 = -((lines.length - 1) / 2) * lh;
     const [W] = contentSize(layer);
     if (d.tracking) ctx.letterSpacing = `${d.tracking}px`;
+
+    // Check if per-character rendering needed
+    const animators = (d.animators || []).filter(a => a.enabled);
+    const needsCharMode = animators.length > 0 || (d.reveal && d.reveal !== "none");
+
     let prog = 1;
-    if (d.reveal && d.reveal !== "none") { const local = t - layer.inPoint - (d.revealStart || 0); prog = clamp(local / Math.max(0.01, d.revealDur || 1), 0, 1); }
+    if (d.reveal && d.reveal !== "none") {
+      const local = t - layer.inPoint - (d.revealStart || 0);
+      prog = clamp(local / Math.max(0.01, d.revealDur || 1), 0, 1);
+    }
     const totalChars = lines.reduce((n, l) => n + l.length, 0) || 1;
     let drawnChars = 0;
+
     lines.forEach((line, li) => {
-      const y = y0 + li * lh; let x;
+      const y = y0 + li * lh;
       const lineW = (() => { _measureCtx.font = ctx.font; return _measureCtx.measureText(line).width + (d.tracking||0)*Math.max(0,line.length-1); })();
-      if (d.align === "left") { ctx.textAlign = "left"; x = -W/2; }
-      else if (d.align === "right") { ctx.textAlign = "right"; x = W/2; }
-      else { ctx.textAlign = "center"; x = 0; }
-      const paint = (str, px) => {
-        ctx.fillStyle = d.color; ctx.fillText(str, px, y);
-        if (d.strokeWidth > 0) { ctx.strokeStyle = d.strokeColor||"#000"; ctx.lineWidth = d.strokeWidth; ctx.lineJoin = "round"; ctx.strokeText(str, px, y); }
-      };
-      if (!d.reveal || d.reveal === "none" || prog >= 1) { paint(line, x); }
-      else if (d.reveal === "typewriter") {
-        const n = clamp(Math.floor(prog*totalChars)-drawnChars, 0, line.length);
-        if (n > 0) paint(line.slice(0, n), d.align==="center" ? -lineW/2 : x);
+      let startX;
+      if (d.align === "left") startX = -W/2;
+      else if (d.align === "right") startX = W/2 - lineW;
+      else startX = -lineW/2;
+
+      if (!needsCharMode) {
+        let px;
+        if (d.align === "left") { ctx.textAlign = "left"; px = -W/2; }
+        else if (d.align === "right") { ctx.textAlign = "right"; px = W/2; }
+        else { ctx.textAlign = "center"; px = 0; }
+        ctx.fillStyle = d.color; ctx.fillText(line, px, y);
+        if (d.strokeWidth > 0) { ctx.strokeStyle = d.strokeColor||"#000"; ctx.lineWidth = d.strokeWidth; ctx.lineJoin = "round"; ctx.strokeText(line, px, y); }
       } else {
-        ctx.save(); ctx.textAlign = "left";
-        let cx2 = d.align==="left" ? -W/2 : d.align==="right" ? W/2-lineW : -lineW/2;
+        ctx.save();
+        ctx.textAlign = "left";
+        let cx2 = startX;
         for (let i = 0; i < line.length; i++) {
-          const cp = clamp((prog*(totalChars+6)-(drawnChars+i))/6, 0, 1);
-          const chW = _measureCtx.measureText(line[i]).width + (d.tracking||0);
-          if (cp > 0) {
-            ctx.globalAlpha = cp;
-            const dy = d.reveal==="risechar" ? (1-cp)*d.size*0.5 : 0;
-            ctx.fillStyle = d.color; ctx.fillText(line[i], cx2, y+dy);
-            if (d.strokeWidth > 0) { ctx.strokeStyle = d.strokeColor||"#000"; ctx.lineWidth = d.strokeWidth; ctx.strokeText(line[i], cx2, y+dy); }
+          const chW = (_measureCtx.measureText(line[i]).width || d.size*0.5) + (d.tracking||0);
+          const charGlobal = drawnChars + i;
+          const charPct = totalChars > 1 ? (charGlobal / (totalChars - 1)) * 100 : 50;
+
+          // Start with defaults
+          let aOpacity = 1, aBlur = 0, aDx = 0, aDy = 0, aScale = 1, aRot = 0;
+
+          // Apply reveal modes
+          if (d.reveal && d.reveal !== "none") {
+            const cp = clamp((prog*(totalChars+6)-(charGlobal))/6, 0, 1);
+            if (d.reveal === "typewriter") {
+              if (charGlobal >= Math.floor(prog*totalChars)) { cx2 += chW; continue; }
+            } else {
+              aOpacity *= cp;
+              if (d.reveal === "risechar") aDy = (1-cp)*d.size*0.5;
+            }
           }
+
+          // Apply each text animator
+          animators.forEach(anim => {
+            const rs = anim.rangeStart ?? 0;
+            const re = anim.rangeEnd ?? 100;
+            const ro = anim.rangeOffset || 0;
+            const smooth = clamp((anim.smoothness || 0)/100, 0, 1);
+            const pos = charPct - ro;
+            let factor;
+            if (smooth < 0.001) {
+              factor = (pos >= rs && pos <= re) ? 1 : 0;
+            } else {
+              const halfW = (re-rs)/2, mid = (rs+re)/2;
+              const dist = Math.abs(pos-mid);
+              const hardEdge = halfW*(1-smooth);
+              const softEdge = halfW*smooth;
+              factor = clamp(softEdge > 0 ? 1-(Math.max(0,dist-hardEdge)/softEdge) : (dist<=hardEdge?1:0), 0, 1);
+            }
+            if (factor > 0) {
+              aOpacity *= lerp(1, clamp((anim.opacity??100)/100,0,1), factor);
+              aBlur += (anim.blur||0)*factor;
+              aDy += (anim.posY||0)*factor;
+              aDx += (anim.posX||0)*factor;
+              const sc = (anim.scale??100)/100;
+              aScale *= lerp(1, sc, factor);
+              aRot += (anim.rotation||0)*factor;
+            }
+          });
+
+          if (aOpacity < 0.004) { cx2 += chW; continue; }
+
+          ctx.save();
+          ctx.translate(cx2 + chW/2, y + aDy);
+          if (aDx !== 0) ctx.translate(aDx, 0);
+          if (aScale !== 1) ctx.scale(aScale, aScale);
+          if (aRot !== 0) ctx.rotate(aRot*Math.PI/180);
+          if (aBlur > 0.1) ctx.filter = `blur(${aBlur}px)`;
+          ctx.globalAlpha = clamp(aOpacity, 0, 1);
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillStyle = d.color; ctx.fillText(line[i], 0, 0);
+          if (d.strokeWidth > 0) {
+            ctx.strokeStyle = d.strokeColor||"#000"; ctx.lineWidth = d.strokeWidth; ctx.lineJoin="round"; ctx.strokeText(line[i], 0, 0);
+          }
+          ctx.restore();
           cx2 += chW;
         }
         ctx.restore();
@@ -119,6 +184,30 @@ const Renderer = (() => {
       drawnChars += line.length;
     });
     if (d.tracking) ctx.letterSpacing = "0px";
+  }
+
+  function shapePerimeter(d) {
+    const w = d.w, h = d.h;
+    if (d.shape === "ellipse") {
+      const a = w/2, b = h/2;
+      return Math.PI * (3*(a+b) - Math.sqrt((3*a+b)*(a+3*b)));
+    }
+    if (d.shape === "rect") return 2*(w+h);
+    if (d.shape === "polygon") {
+      const n = Math.max(3, d.points|0), R = Math.min(w,h)/2;
+      return 2 * n * R * Math.sin(Math.PI/n);
+    }
+    if (d.shape === "star") {
+      const n = Math.max(3, d.points|0), R = Math.min(w,h)/2, r = R*clamp(d.inset||0.5,0.05,0.95);
+      let p2 = 0;
+      for (let i = 0; i < n; i++) {
+        const a1=(i*Math.PI*2/n)-Math.PI/2, a2=((i+0.5)*Math.PI*2/n)-Math.PI/2, a3=((i+1)*Math.PI*2/n)-Math.PI/2;
+        p2 += Math.hypot(R*Math.cos(a1)-r*Math.cos(a2), R*Math.sin(a1)-r*Math.sin(a2));
+        p2 += Math.hypot(r*Math.cos(a2)-R*Math.cos(a3), r*Math.sin(a2)-R*Math.sin(a3));
+      }
+      return p2;
+    }
+    return 2*(d.w+d.h);
   }
 
   function drawShapePath(ctx, d) {
@@ -161,14 +250,19 @@ const Renderer = (() => {
             ctx.translate(ox, oy); ctx.rotate(rrot); ctx.scale(rs, rs);
             ctx.globalAlpha *= Math.pow((d.repeatOpacity||100)/100, ri);
           }
-          if (d.trimEnabled && d.stroke && d.strokeWidth > 0) {
-            const s = clamp(d.trimStart/100, 0, 1), e = clamp(d.trimEnd/100, 0, 1);
+          if (d.trimEnabled) {
+            const s = clamp((d.trimStart??0)/100,0,1), e = clamp((d.trimEnd??100)/100,0,1);
             const off = ((d.trimOffset||0)/360);
-            const start = ((s + off) % 1) * Math.PI * 2, end = ((e + off) % 1) * Math.PI * 2;
-            ctx.beginPath();
-            if (d.shape === "ellipse") ctx.ellipse(0,0,w/2,h/2,0,start,end);
-            else { drawShapePath(ctx, d); } // fallback for non-ellipse
-            ctx.strokeStyle = d.stroke; ctx.lineWidth = d.strokeWidth; ctx.stroke();
+            const perim = shapePerimeter(d);
+            const segLen = Math.max(0.01,(e-s)*perim);
+            ctx.save();
+            ctx.setLineDash([segLen, Math.max(0.01, perim-segLen)]);
+            ctx.lineDashOffset = -((s+off)%1)*perim;
+            drawShapePath(ctx, d);
+            if (d.fill) { ctx.fillStyle = fillStyleFor(ctx,d,w,h,true); ctx.fill(); }
+            if (d.stroke && d.strokeWidth > 0) { ctx.strokeStyle=d.stroke; ctx.lineWidth=d.strokeWidth; ctx.stroke(); }
+            ctx.setLineDash([]); ctx.lineDashOffset=0;
+            ctx.restore();
           } else {
             drawShapePath(ctx, d);
             if (d.fill) { ctx.fillStyle = fillStyleFor(ctx, d, w, h, true); ctx.fill(); }

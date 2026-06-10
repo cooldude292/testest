@@ -123,6 +123,7 @@ const PrState = (() => {
   function stopPlay() {
     _playing = false;
     if (_raf) { cancelAnimationFrame(_raf); _raf = null; }
+    if (typeof PrAudio !== "undefined") PrAudio.stop();
   }
 
   function _updatePlayBtn() {
@@ -218,7 +219,7 @@ function prFmtTCFull(sec) {
 /* ── PrRenderer (frame renderer) ───────────────────────────────────── */
 
 const PrRenderer = (() => {
-  async function drawClip(ctx, clip, clipT, W, H) {
+  async function drawClip(ctx, clip, clipT, W, H, playing) {
     const asset = prAsset(clip.assetId);
     if (!asset) {
       ctx.fillStyle = clip.color || "#2a2a3a";
@@ -228,12 +229,14 @@ const PrRenderer = (() => {
     if (asset.type === "video") {
       const vid = _vidPool.get(clip.assetId);
       if (vid && !isNaN(vid.duration) && vid.duration > 0) {
-        const t = Math.max(0, Math.min(vid.duration - 0.001, clipT));
-        if (Math.abs(vid.currentTime - t) > 0.1) {
-          vid.currentTime = t;
-          await new Promise(r => { vid.onseeked = r; setTimeout(r, 120); });
+        if (!playing) {
+          const t = Math.max(0, Math.min(vid.duration - 0.001, clipT));
+          if (Math.abs(vid.currentTime - t) > 0.08) {
+            vid.currentTime = t;
+            await new Promise(r => { vid.onseeked = r; setTimeout(r, 150); });
+          }
         }
-        ctx.drawImage(vid, 0, 0, W, H);
+        try { ctx.drawImage(vid, 0, 0, W, H); } catch(e) {}
       } else {
         ctx.fillStyle = "#111"; ctx.fillRect(0, 0, W, H);
       }
@@ -245,7 +248,7 @@ const PrRenderer = (() => {
     }
   }
 
-  async function renderFrame(ctx, seq, t) {
+  async function renderFrame(ctx, seq, t, playing) {
     const W = ctx.canvas.width, H = ctx.canvas.height;
     ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
     if (!seq) return;
@@ -261,7 +264,7 @@ const PrRenderer = (() => {
         if (clip.transOut && t > clip.seqEnd - clip.transOut.duration)
           alpha *= (clip.seqEnd - t) / clip.transOut.duration;
         ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
-        await drawClip(ctx, clip, clipT, W, H);
+        await drawClip(ctx, clip, clipT, W, H, playing);
       }
     }
     ctx.globalAlpha = 1;
@@ -437,11 +440,11 @@ const PrProgramMonitor = (() => {
     resizeCanvas();
     window.addEventListener("resize", resizeCanvas);
     cvs.addEventListener("mousedown", onDown);
-    bindBtn("pr-play-btn",  () => PrState.togglePlay());
-    bindBtn("pr-go-start",  () => { PrState.playhead = 0; draw(); PrTimeline.drawPlayhead(); });
-    bindBtn("pr-go-end",    () => { PrState.playhead = PrState.seq?.duration || 0; draw(); PrTimeline.drawPlayhead(); });
-    bindBtn("pr-step-back", () => { PrState.playhead -= 1 / (PrState.seq?.fps || 30); draw(); PrTimeline.drawPlayhead(); });
-    bindBtn("pr-step-fwd",  () => { PrState.playhead += 1 / (PrState.seq?.fps || 30); draw(); PrTimeline.drawPlayhead(); });
+    bindBtn("pr-play-btn",  () => { PrState.togglePlay(); PrAudio.sync(); });
+    bindBtn("pr-go-start",  () => { PrState.stopPlay(); PrState.playhead = 0; PrAudio.stop(); draw(); PrTimeline.drawPlayhead(); });
+    bindBtn("pr-go-end",    () => { PrState.stopPlay(); PrState.playhead = PrState.seq?.duration || 0; PrAudio.stop(); draw(); PrTimeline.drawPlayhead(); });
+    bindBtn("pr-step-back", () => { PrState.stopPlay(); PrState.playhead -= 1 / (PrState.seq?.fps || 30); PrAudio.stop(); draw(); PrTimeline.drawPlayhead(); });
+    bindBtn("pr-step-fwd",  () => { PrState.stopPlay(); PrState.playhead += 1 / (PrState.seq?.fps || 30); PrAudio.stop(); draw(); PrTimeline.drawPlayhead(); });
     bindBtn("pr-lift",    liftAtPlayhead);
     bindBtn("pr-extract", extractAtPlayhead);
     draw();
@@ -466,7 +469,7 @@ const PrProgramMonitor = (() => {
       ctx.fillText("No sequence — create one in the bins panel", W / 2, H / 2);
       return;
     }
-    await PrRenderer.renderFrame(ctx, seq, PrState.playhead);
+    await PrRenderer.renderFrame(ctx, seq, PrState.playhead, PrState.playing);
     _drawOverlay(W, H, seq);
   }
 
@@ -483,13 +486,13 @@ const PrProgramMonitor = (() => {
   }
 
   function onDown(e) {
+    PrState.stopPlay(); PrAudio.stop();
     scrub = true; moveScrub(e);
     const mm = e2 => { if (scrub) moveScrub(e2); };
     const mu = () => { scrub = false; document.removeEventListener("mousemove", mm); document.removeEventListener("mouseup", mu); };
     document.addEventListener("mousemove", mm);
     document.addEventListener("mouseup", mu);
   }
-
   function moveScrub(e) {
     const seq = PrState.seq; if (!seq) return;
     const r = cvs.getBoundingClientRect();
@@ -520,6 +523,87 @@ const PrProgramMonitor = (() => {
   }
 
   return { init, draw, resizeCanvas };
+})();
+
+/* ── PrAudio — sequence audio playback ─────────────────────────────── */
+const PrAudio = (() => {
+  const _playing = new Map(); // assetId → { el, startWallTime, startSeqTime }
+
+  function sync() {
+    if (!PrState.playing) { stop(); return; }
+    const seq = PrState.seq; if (!seq) return;
+    const now = performance.now() / 1000;
+    const seqT = PrState.playhead;
+
+    // Stop elements no longer needed
+    _playing.forEach((info, assetId) => {
+      const active = seq.audioTracks.some(tr =>
+        tr.clips.some(c => !tr.mute && assetId === c.assetId && seqT >= c.seqStart && seqT < c.seqEnd)
+      );
+      if (!active) { try { info.el.pause(); } catch(e){} _playing.delete(assetId); }
+    });
+
+    // Start/continue audio elements for active clips
+    seq.audioTracks.forEach(tr => {
+      if (tr.mute) return;
+      tr.clips.forEach(clip => {
+        if (seqT < clip.seqStart || seqT >= clip.seqEnd) return;
+        const asset = prAsset(clip.assetId); if (!asset) return;
+        const clipT = clip.srcIn + (seqT - clip.seqStart) * clip.speed;
+        if (_playing.has(clip.assetId)) {
+          const info = _playing.get(clip.assetId);
+          info.el.volume = clamp((clip.volume || 100) / 100, 0, 1);
+          info.el.playbackRate = clip.speed || 1;
+          return;
+        }
+        // Also play audio from video clips if they have audio
+        let el = _vidPool.get(clip.assetId);
+        if (!el) {
+          // Try audio element
+          const vid = document.createElement("audio");
+          vid.src = asset.url || asset.src || "";
+          vid.preload = "auto";
+          el = vid;
+          _vidPool.set(clip.assetId, el);
+        }
+        if (!el) return;
+        el.muted = false;
+        el.volume = clamp((clip.volume || 100) / 100, 0, 1);
+        el.playbackRate = clip.speed || 1;
+        el.currentTime = clipT;
+        el.play().catch(() => {});
+        _playing.set(clip.assetId, { el, startWallTime: now, startSeqTime: seqT });
+      });
+    });
+
+    // Also unmute video clips' audio when playing
+    seq.videoTracks.forEach(tr => {
+      if (tr.mute) return;
+      tr.clips.forEach(clip => {
+        if (seqT < clip.seqStart || seqT >= clip.seqEnd) return;
+        const vid = _vidPool.get(clip.assetId);
+        if (vid && vid.tagName === "VIDEO" && vid.paused) {
+          const clipT = clip.srcIn + (seqT - clip.seqStart) * clip.speed;
+          vid.muted = false;
+          vid.volume = clamp((clip.volume || 100) / 100, 0, 1);
+          vid.playbackRate = clip.speed || 1;
+          vid.currentTime = clipT;
+          vid.play().catch(() => {});
+        }
+      });
+    });
+  }
+
+  function stop() {
+    _playing.forEach(info => { try { info.el.pause(); } catch(e){} });
+    _playing.clear();
+    // Mute all video elements
+    _vidPool.forEach(v => { if (v.tagName === "VIDEO") { try { v.pause(); v.muted = true; } catch(e){} } });
+  }
+
+  function clamp(v, a, b) { return Math.min(b, Math.max(a, v)); }
+
+  return { sync, stop };
 })();
 
 /* ── PrBins (project / bins panel) ─────────────────────────────────── */
@@ -1077,7 +1161,22 @@ const PrTimeline = (() => {
     const ti = _trackAt(my); if (!ti) return;
     const a = prAsset(assetId); if (!a) return;
     const dur = a.duration || 5;
-    PrState.addClipToTrack(ti.track, makePrClip(assetId, 0, dur), sec);
+    const clip = makePrClip(assetId, 0, dur);
+    PrState.addClipToTrack(ti.track, clip, sec);
+    // Linked audio: if dropping a video with duration on a video track, also add to first audio track
+    if (a.type === "video" && seq.audioTracks.length > 0) {
+      const isVideoTrack = seq.videoTracks.includes(ti.track);
+      if (isVideoTrack) {
+        prGetVideo(assetId).then(v => {
+          if (v && !v.muted) { // video has audio
+            const aClip = makePrClip(assetId, 0, dur);
+            aClip.opacity = 100; // mark as audio-linked
+            PrState.addClipToTrack(seq.audioTracks[0], aClip, sec);
+            draw();
+          }
+        }).catch(() => {});
+      }
+    }
     draw();
   }
 
@@ -1180,7 +1279,73 @@ function initPremiere() {
   });
 
   // Export sequence
-  bindBtn("pr-export-btn", () => {
-    if (typeof toast !== "undefined") toast("Use the Motion tab Export for full rendering. Premiere sequences support MP4 / WebM export.");
+  bindBtn("pr-export-btn", () => exportSequence());
+}
+
+async function exportSequence() {
+  const seq = PrState.seq;
+  if (!seq) { if (typeof toast !== "undefined") toast("No sequence to export"); return; }
+  const fmt = document.getElementById("pr-export-format")?.value || "webm";
+  const fps = seq.fps || 30;
+  const totalFrames = Math.ceil(seq.duration * fps);
+  const W = seq.width, H = seq.height;
+
+  if (typeof toast !== "undefined") toast("Exporting sequence…");
+
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const cctx = cv.getContext("2d");
+
+  // Try WebCodecs MP4 first if fmt=mp4
+  if (fmt === "mp4" && window.VideoEncoder && typeof Muxer !== "undefined" && Muxer?.Muxer) {
+    try {
+      const muxer = new Muxer.Muxer({
+        target: new Muxer.ArrayBufferTarget(),
+        video: { codec: "avc", width: W, height: H },
+        fastStart: "in-memory",
+      });
+      const encoder = new VideoEncoder({
+        output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+        error: e => console.error("VideoEncoder:", e),
+      });
+      encoder.configure({ codec: "avc1.42001f", width: W, height: H, bitrate: 8_000_000, framerate: fps });
+      for (let f = 0; f < totalFrames; f++) {
+        const t = f / fps;
+        await PrRenderer.renderFrame(cctx, seq, t, false);
+        const frame = new VideoFrame(cv, { timestamp: Math.round(t * 1_000_000), duration: Math.round(1_000_000 / fps) });
+        encoder.encode(frame, { keyFrame: f % 30 === 0 });
+        frame.close();
+      }
+      await encoder.flush();
+      muxer.finalize();
+      const buf = muxer.target.buffer;
+      const blob = new Blob([buf], { type: "video/mp4" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = (seq.name || "sequence") + ".mp4"; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      if (typeof toast !== "undefined") toast("Sequence exported as MP4");
+      return;
+    } catch(e) { console.warn("MP4 export failed, falling back to WebM:", e); }
+  }
+
+  // WebM fallback via MediaRecorder
+  const stream = cv.captureStream(fps);
+  const chunks = [];
+  const rec = new MediaRecorder(stream, { mimeType: "video/webm" });
+  rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+  await new Promise(resolve => {
+    rec.onstop = resolve;
+    rec.start();
+    let f = 0;
+    (function frame() {
+      if (f >= totalFrames) { rec.stop(); return; }
+      const t = f / fps;
+      PrRenderer.renderFrame(cctx, seq, t, false).then(() => { f++; requestAnimationFrame(frame); });
+    })();
   });
+  const blob = new Blob(chunks, { type: "video/webm" });
+  const url = URL.createObjectURL(blob);
+  const a2 = document.createElement("a"); a2.href = url; a2.download = (seq.name || "sequence") + ".webm"; a2.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  if (typeof toast !== "undefined") toast("Sequence exported as WebM");
 }

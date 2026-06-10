@@ -374,7 +374,7 @@ function makeLayer(type, opts = {}) {
       base.data = { color:"#5e6ad2",color2:"#26b5ce",fillType:"solid",gradAngle:0, w:Math.round(c.width*0.4),h:Math.round(c.height*0.4) };
       break;
     case "text":
-      base.data = { text:opts.text||"Hello",font:"Inter, system-ui, sans-serif",size:72,weight:"600",color:"#f7f8f8",lineHeight:1.2,tracking:0,align:"center",caps:false,strokeColor:"#000000",strokeWidth:0,reveal:"none",revealStart:0,revealDur:1 };
+      base.data = { text:opts.text||"Hello",font:"Inter, system-ui, sans-serif",size:72,weight:"600",color:"#f7f8f8",lineHeight:1.2,tracking:0,align:"center",caps:false,strokeColor:"#000000",strokeWidth:0,reveal:"none",revealStart:0,revealDur:1,animators:[] };
       break;
     case "shape":
       base.data = { shape:"rect",w:300,h:300,fill:"#4cb782",fill2:"#26b5ce",fillType:"solid",gradAngle:0,stroke:"",strokeWidth:0,radius:24,points:5,inset:0.5,
@@ -715,6 +715,7 @@ function migrateLayer(l) {
   if (!l.props.rotationX) l.props.rotationX = animProp(0);
   if (!l.props.rotationY) l.props.rotationY = animProp(0);
   if (l.type === "audio") { l.data.eqLow = l.data.eqLow ?? 0; l.data.eqMid = l.data.eqMid ?? 0; l.data.eqHigh = l.data.eqHigh ?? 0; }
+  if (l.type === "text" && !l.data.animators) l.data.animators = [];
   if (l.type === "shape") {
     l.data.trimStart = l.data.trimStart ?? 0; l.data.trimEnd = l.data.trimEnd ?? 100;
     l.data.trimOffset = l.data.trimOffset ?? 0; l.data.trimEnabled = l.data.trimEnabled ?? false;

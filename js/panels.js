@@ -591,7 +591,7 @@ const Panels = (() => {
         colorInput(() => d.strokeColor || "#000000", v => d.strokeColor = v),
         numInput(() => d.strokeWidth || 0, v => d.strokeWidth = v, { label: "W", min: 0, max: 60 })));
       g.appendChild(dataRow("Caps", checkbox("All caps", () => d.caps, v => d.caps = v)));
-      g.appendChild(dataRow("Animator", selectInput(
+      g.appendChild(dataRow("Reveal", selectInput(
         [["none", "None"], ["typewriter", "Typewriter"], ["fadechar", "Fade per char"], ["risechar", "Rise per char"]],
         () => d.reveal || "none", v => d.reveal = v)));
       if (d.reveal && d.reveal !== "none") {
@@ -599,6 +599,57 @@ const Panels = (() => {
           numInput(() => d.revealStart || 0, v => d.revealStart = v, { label: "start", min: 0, max: 60, step: 0.05, decimals: 2 }),
           numInput(() => d.revealDur || 1, v => d.revealDur = v, { label: "dur", min: 0.05, max: 30, step: 0.05, decimals: 2 })));
       }
+
+      // ─── Text Animators ───────────────────────────────────────────
+      const animHead = document.createElement("div");
+      animHead.className = "prop-group-title";
+      animHead.style.marginTop = "10px";
+      animHead.textContent = "Animators";
+      const addAnimBtn = document.createElement("button");
+      addAnimBtn.className = "btn ghost sm";
+      addAnimBtn.textContent = "+ Add";
+      addAnimBtn.title = "Add text animator";
+      addAnimBtn.addEventListener("click", () => {
+        App.commit();
+        if (!d.animators) d.animators = [];
+        d.animators.push({ id: uid(), name: "Animator " + (d.animators.length+1), enabled: true,
+          rangeStart: 0, rangeEnd: 100, rangeOffset: 0, smoothness: 50,
+          opacity: 100, blur: 0, posX: 0, posY: 0, scale: 100, rotation: 0 });
+        App.emit("project");
+      });
+      animHead.appendChild(addAnimBtn);
+      g.appendChild(animHead);
+
+      (d.animators || []).forEach((anim, ai) => {
+        const ag = document.createElement("div");
+        ag.style.cssText = "border-left:2px solid var(--accent);padding-left:8px;margin:4px 0 8px;";
+        const ah = document.createElement("div");
+        ah.style.cssText = "display:flex;align-items:center;gap:4px;margin-bottom:4px;font-size:11px;color:var(--text-2);";
+        const enCb = document.createElement("input"); enCb.type="checkbox"; enCb.checked=anim.enabled;
+        enCb.addEventListener("change", () => { App.commit(); anim.enabled=enCb.checked; App.emit("project"); });
+        const lbl = document.createElement("span"); lbl.textContent=anim.name; lbl.style.flex="1";
+        const delBtn = document.createElement("button"); delBtn.className="btn ghost sm"; delBtn.textContent="✕"; delBtn.style.padding="0 4px";
+        delBtn.addEventListener("click", () => { App.commit(); d.animators.splice(ai,1); App.emit("project"); });
+        ah.append(enCb, lbl, delBtn);
+        ag.appendChild(ah);
+        // Range selector
+        ag.appendChild(pairRow("Range",
+          numInput(() => anim.rangeStart, v => { anim.rangeStart=clamp(v,0,100); }, { label: "S%", min:0, max:100, step:1 }),
+          numInput(() => anim.rangeEnd,   v => { anim.rangeEnd  =clamp(v,0,100); }, { label: "E%", min:0, max:100, step:1 })));
+        ag.appendChild(pairRow("Offset/Smooth",
+          numInput(() => anim.rangeOffset, v => { anim.rangeOffset=v; }, { label: "Off", min:-200, max:200, step:1 }),
+          numInput(() => anim.smoothness||0, v => { anim.smoothness=clamp(v,0,100); }, { label: "Soft%", min:0, max:100, step:1 })));
+        // Property values
+        ag.appendChild(dataRow("Opacity %", numInput(() => anim.opacity??100, v => { anim.opacity=clamp(v,0,100); }, { min:0, max:100, step:1 })));
+        ag.appendChild(pairRow("Pos X/Y",
+          numInput(() => anim.posX||0, v => { anim.posX=v; }, { label:"X", step:1 }),
+          numInput(() => anim.posY||0, v => { anim.posY=v; }, { label:"Y", step:1 })));
+        ag.appendChild(pairRow("Scale/Rot",
+          numInput(() => anim.scale??100, v => { anim.scale=v; }, { label:"%", min:0, max:500, step:1 }),
+          numInput(() => anim.rotation||0, v => { anim.rotation=v; }, { label:"°", step:0.5 })));
+        ag.appendChild(dataRow("Blur px", numInput(() => anim.blur||0, v => { anim.blur=clamp(v,0,100); }, { min:0, max:100, step:1 })));
+        g.appendChild(ag);
+      });
     }
 
     if (layer.type === "shape") {
@@ -1009,7 +1060,17 @@ const Panels = (() => {
     document.querySelectorAll("[data-newlayer]").forEach(btn => {
       btn.addEventListener("click", () => {
         App.commit();
-        Layers.add(makeLayer(btn.dataset.newlayer));
+        const type = btn.dataset.newlayer;
+        if (type === "comp") {
+          const others = App.project.comps.filter(c => c.id !== App.comp.id);
+          if (!others.length) { toast("No other compositions to add. Create another comp first."); return; }
+          const names = others.map((c,i) => `${i+1}. ${c.name}`).join("\n");
+          const idx = parseInt(prompt(`Choose composition:\n${names}\nEnter number:`), 10) - 1;
+          if (isNaN(idx) || idx < 0 || idx >= others.length) return;
+          Layers.add(makeLayer("comp", { compId: others[idx].id, name: others[idx].name }));
+        } else {
+          Layers.add(makeLayer(type));
+        }
       });
     });
 
