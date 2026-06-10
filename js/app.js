@@ -2281,6 +2281,30 @@ App.emit('project');">
 
 /* ── boot ── */
 function initApp() {
+  // Desktop app detection
+  if (window.electronAPI?.isDesktop || window.LUMEN_DESKTOP) {
+    document.body.dataset.desktop = '1';
+    // Wire native file import
+    const importBtns = document.querySelectorAll('[data-import-media]');
+    importBtns.forEach(btn => btn.addEventListener('click', async () => {
+      const paths = await window.electronAPI.openFile([
+        { name: 'Media Files', extensions: ['mp4','mov','avi','mkv','mp3','wav','aac','jpg','jpeg','png','gif','webp','tiff','psd'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]);
+      if (paths && paths.length) {
+        for (const p of paths) App.importFromPath?.(p);
+      }
+    }));
+    // Wire menu events
+    if (window.electronAPI.onMenu) {
+      window.electronAPI.onMenu('new-project', () => App.newProject?.());
+      window.electronAPI.onMenu('save', () => App.saveProject?.());
+      window.electronAPI.onMenu('import-media', () => document.getElementById('asset-import-input')?.click());
+      window.electronAPI.onMenu('export', () => document.getElementById('btn-export')?.click());
+      window.electronAPI.onMenu('export-queue', () => document.getElementById('btn-export-queue')?.click());
+    }
+  }
+
   Settings.load();
   App.snapToGrid = Settings.get("snapGrid");
   App.project = defaultProject();
@@ -2358,9 +2382,11 @@ function initApp() {
     settingsOverlay.addEventListener("pointerdown", e => { if (e.target === settingsOverlay) Settings.closeModal(); });
   }
 
-  // Desktop download
-  const desktopBtn = document.getElementById("btn-desktop");
-  if (desktopBtn) desktopBtn.addEventListener("click", downloadDesktopApp);
+  // Desktop download button → open modal
+  bindBtn('btn-desktop', () => {
+    const m = document.getElementById('desktop-download-modal');
+    if (m) m.hidden = false;
+  });
 
   // RAM preview button
   const ramBtn = document.getElementById("btn-ram-preview");
@@ -2568,6 +2594,93 @@ function initApp() {
   setTimeout(() => tryRestoreAutosave(), 300);
 
   if (typeof initPremiere === "function") initPremiere();
+
+  // Close-modal handler for data-modal buttons
+  document.querySelectorAll('.close-modal[data-modal]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const m = document.getElementById(btn.dataset.modal);
+      if (m) m.hidden = true;
+    });
+  });
+
+  // Desktop download modal: close on overlay click
+  const ddModal = document.getElementById('desktop-download-modal');
+  if (ddModal) ddModal.addEventListener('pointerdown', e => { if (e.target === ddModal) ddModal.hidden = true; });
+  const fxModal = document.getElementById('fx-browser-modal');
+  if (fxModal) fxModal.addEventListener('pointerdown', e => { if (e.target === fxModal) fxModal.hidden = true; });
+
+  // Effects catalog browser
+  (function initFxBrowser() {
+    if (typeof EffectsCatalog === 'undefined') return;
+    const modal = document.getElementById('fx-browser-modal');
+    const grid = document.getElementById('fx-grid');
+    const search = document.getElementById('fx-search');
+    const catFilter = document.getElementById('fx-cat-filter');
+    const countBar = document.getElementById('fx-count-bar');
+    if (!modal || !grid) return;
+
+    // Populate category filter
+    const cats = Object.keys(EffectsCatalog.byCategory()).sort();
+    cats.forEach(c => {
+      const o = document.createElement('option'); o.value = c; o.textContent = c;
+      catFilter.appendChild(o);
+    });
+
+    let _targetLayer = null;
+
+    function renderGrid() {
+      const q = search.value.trim();
+      const cat = catFilter.value;
+      let effects = q ? EffectsCatalog.search(q) : EffectsCatalog.CATALOG;
+      if (cat) effects = effects.filter(e => e.cat === cat);
+      const isDesktop = document.body.dataset.desktop === '1';
+      grid.innerHTML = '';
+      effects.forEach(eff => {
+        const locked = eff.desktop && !isDesktop;
+        const item = document.createElement('div');
+        item.className = 'fx-item' + (locked ? ' locked' : '');
+        item.title = locked ? 'Desktop app required' : eff.name;
+        item.innerHTML = `
+          <div class="fx-item-name">${eff.name}</div>
+          <div class="fx-item-cat">${eff.cat}</div>
+          ${locked ? '<div class="fx-item-lock">🔒 Desktop</div>' : ''}
+        `;
+        if (!locked) {
+          item.addEventListener('click', () => {
+            if (!_targetLayer) return;
+            if (!_targetLayer.catalogFx) _targetLayer.catalogFx = [];
+            const defaults = {};
+            (eff.params || []).forEach(p => { defaults[p.id] = p.default ?? p.min ?? 0; });
+            _targetLayer.catalogFx.push({ id: eff.id, params: defaults });
+            App.emit('project');
+            modal.hidden = true;
+            // Refresh panel
+            if (typeof buildPropsPanel === 'function') buildPropsPanel?.();
+            if (typeof App !== 'undefined') App.emit('selection');
+          });
+        } else {
+          item.addEventListener('click', () => {
+            const dm = document.getElementById('desktop-download-modal');
+            if (dm) { modal.hidden = true; dm.hidden = false; }
+          });
+        }
+        grid.appendChild(item);
+      });
+      countBar.textContent = `${effects.length} effects${cat ? ` in ${cat}` : ''} — ${EffectsCatalog.count()} total in catalog`;
+    }
+
+    search.addEventListener('input', renderGrid);
+    catFilter.addEventListener('change', renderGrid);
+
+    // Expose opener
+    window.openFxBrowser = (layer) => {
+      _targetLayer = layer;
+      modal.hidden = false;
+      renderGrid();
+    };
+
+    renderGrid();
+  })();
 }
 
 window.addEventListener("DOMContentLoaded", initApp);
