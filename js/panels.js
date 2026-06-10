@@ -455,10 +455,21 @@ const Panels = (() => {
     titleRow.textContent = "Transform";
     const sketchBtn = motionSketchBtn(layer);
     titleRow.appendChild(sketchBtn);
+    // pen tool button
+    const penBtn = document.createElement("button");
+    penBtn.className = "btn ghost sm";
+    penBtn.title = "Pen tool: draw bezier path mask";
+    penBtn.textContent = "✎ Pen";
+    penBtn.addEventListener("click", () => typeof Viewport !== "undefined" && Viewport.togglePenTool());
+    titleRow.appendChild(penBtn);
     g.appendChild(titleRow);
     g.appendChild(propRow(layer, "position", vecScrubs(layer, "position", ["X", "Y"])));
     g.appendChild(propRow(layer, "scale", vecScrubs(layer, "scale", ["X", "Y"], { step: 0.5 })));
     g.appendChild(propRow(layer, "rotation", [scalarScrub(layer, "rotation", "°", { step: 0.5 })]));
+    if (layer.props.rotationX) {
+      g.appendChild(propRow(layer, "rotationX", [scalarScrub(layer, "rotationX", "°", { step: 0.5, min: -360, max: 360 })]));
+      g.appendChild(propRow(layer, "rotationY", [scalarScrub(layer, "rotationY", "°", { step: 0.5, min: -360, max: 360 })]));
+    }
     g.appendChild(propRow(layer, "opacity", [scalarScrub(layer, "opacity", "%", { step: 0.5, min: 0, max: 100 })]));
     g.appendChild(propRow(layer, "anchor", vecScrubs(layer, "anchor", ["X", "Y"])));
     return g;
@@ -648,8 +659,48 @@ const Panels = (() => {
       span.style.fontSize = "12px";
       span.textContent = a ? a.name : "(missing)";
       g.appendChild(dataRow("Source", span));
+      if (layer.type === "video") {
+        const trackBtn = document.createElement("button");
+        trackBtn.className = "btn ghost sm";
+        trackBtn.textContent = "⌖ Track Motion";
+        trackBtn.title = "Track motion from this video to selected layer";
+        trackBtn.addEventListener("click", async () => {
+          const target = App.selectedLayers().find(l => l.id !== layer.id) || App.layers.find(l => l.id !== layer.id);
+          if (!target) { toast("Select a target layer to receive tracking data"); return; }
+          toast("Motion tracking…");
+          try { await MotionTracker.track(layer, target); }
+          catch (e) { toast("Track failed: " + e.message); }
+        });
+        g.appendChild(dataRow("Tracker", trackBtn));
+      }
       if (layer.type === "audio") {
         g.appendChild(dataRow("Volume", numInput(() => d.volume ?? 100, v => d.volume = v, { label: "%", min: 0, max: 200 })));
+        const eqHead = document.createElement("div");
+        eqHead.className = "prop-group-title";
+        eqHead.style.marginTop = "8px";
+        eqHead.textContent = "EQ";
+        g.appendChild(eqHead);
+        g.appendChild(pairRow("Low / Mid",
+          numInput(() => d.eqLow ?? 0, v => d.eqLow = clamp(v, -24, 24), { label: "dB", min: -24, max: 24, step: 0.5, decimals: 1 }),
+          numInput(() => d.eqMid ?? 0, v => d.eqMid = clamp(v, -24, 24), { label: "dB", min: -24, max: 24, step: 0.5, decimals: 1 })));
+        g.appendChild(dataRow("High", numInput(() => d.eqHigh ?? 0, v => d.eqHigh = clamp(v, -24, 24), { label: "dB", min: -24, max: 24, step: 0.5, decimals: 1 })));
+
+        // Motion tracker button
+        const trackBtn = document.createElement("button");
+        trackBtn.className = "btn ghost sm";
+        trackBtn.style.marginTop = "6px";
+        trackBtn.textContent = "⌖ Track Motion";
+        trackBtn.title = "Track motion from video asset to position keyframes on selected layer";
+        trackBtn.addEventListener("click", async () => {
+          const vidLayer = App.layers.find(l => l.type === "video");
+          const target = App.layers.find(l => l.id === App.selection && l.type !== "audio");
+          if (!vidLayer || !target) { toast("Need a video layer and select a target layer"); return; }
+          toast("Motion tracking… (this may take a moment)");
+          try {
+            await MotionTracker.track(vidLayer, target);
+          } catch (e) { toast("Track failed: " + e.message); }
+        });
+        g.appendChild(trackBtn);
       }
     }
 
@@ -772,25 +823,35 @@ const Panels = (() => {
 
       const row1 = document.createElement("div");
       row1.className = "prop-row";
+      const shapeSel = mask.shape === "path"
+        ? (() => { const s = document.createElement("span"); s.className = "dim"; s.style.fontSize="11px"; s.textContent = "Bezier Path"; return s; })()
+        : selectInput([["rect", "Rectangle"], ["ellipse", "Ellipse"]], () => mask.shape, v => mask.shape = v);
       row1.append(
-        selectInput([["rect", "Rectangle"], ["ellipse", "Ellipse"]], () => mask.shape, v => mask.shape = v),
+        shapeSel,
         selectInput([["add", "Add"], ["subtract", "Subtract"]], () => mask.mode, v => mask.mode = v),
       );
       card.appendChild(row1);
-      const row2 = document.createElement("div");
-      row2.className = "prop-row";
-      row2.append(
-        numInput(() => mask.x, v => mask.x = v, { label: "X" }),
-        numInput(() => mask.y, v => mask.y = v, { label: "Y" }),
-      );
-      card.appendChild(row2);
-      const row3 = document.createElement("div");
-      row3.className = "prop-row";
-      row3.append(
-        numInput(() => mask.w, v => mask.w = Math.max(1, v), { label: "W", min: 1 }),
-        numInput(() => mask.h, v => mask.h = Math.max(1, v), { label: "H", min: 1 }),
-      );
-      card.appendChild(row3);
+      if (mask.shape !== "path") {
+        const row2 = document.createElement("div");
+        row2.className = "prop-row";
+        row2.append(
+          numInput(() => mask.x, v => mask.x = v, { label: "X" }),
+          numInput(() => mask.y, v => mask.y = v, { label: "Y" }),
+        );
+        card.appendChild(row2);
+        const row3 = document.createElement("div");
+        row3.className = "prop-row";
+        row3.append(
+          numInput(() => mask.w, v => mask.w = Math.max(1, v), { label: "W", min: 1 }),
+          numInput(() => mask.h, v => mask.h = Math.max(1, v), { label: "H", min: 1 }),
+        );
+        card.appendChild(row3);
+      } else {
+        const pathInfo = document.createElement("div");
+        pathInfo.className = "prop-row";
+        pathInfo.innerHTML = `<span class="dim" style="font-size:11px">${mask.points ? mask.points.length : 0} points · ${mask.closed ? "closed" : "open"}</span>`;
+        card.appendChild(pathInfo);
+      }
       const row4 = document.createElement("div");
       row4.className = "prop-row";
       row4.append(numInput(() => mask.feather, v => mask.feather = Math.max(0, v), { label: "Feather", min: 0, max: 300 }));
@@ -808,7 +869,12 @@ const Panels = (() => {
     addEll.className = "btn ghost sm block";
     addEll.textContent = "+ Ellipse mask";
     addEll.addEventListener("click", () => { App.commit(); Layers.addMask(layer, "ellipse"); });
-    addRow.append(addRect, addEll);
+    const addPath = document.createElement("button");
+    addPath.className = "btn ghost sm block";
+    addPath.textContent = "✎ Pen tool";
+    addPath.title = "Use pen tool to draw a bezier path mask";
+    addPath.addEventListener("click", () => typeof Viewport !== "undefined" && Viewport.togglePenTool());
+    addRow.append(addRect, addEll, addPath);
     g.appendChild(addRow);
     return g;
   }

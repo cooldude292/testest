@@ -505,8 +505,19 @@ const Renderer = (() => {
       if (mask.feather>0) mctx.filter=`blur(${mask.feather*q}px)`;
       mctx.globalCompositeOperation = mask.mode==="subtract" ? "destination-out" : "source-over";
       mctx.fillStyle="#fff"; mctx.beginPath();
-      if (mask.shape==="ellipse") mctx.ellipse(mask.x,mask.y,mask.w/2,mask.h/2,0,0,Math.PI*2);
-      else mctx.rect(mask.x-mask.w/2,mask.y-mask.h/2,mask.w,mask.h);
+      if (mask.shape==="ellipse") {
+        mctx.ellipse(mask.x,mask.y,mask.w/2,mask.h/2,0,0,Math.PI*2);
+      } else if (mask.shape==="path" && mask.points && mask.points.length>1) {
+        const pts=mask.points;
+        mctx.moveTo(pts[0].x, pts[0].y);
+        for (let i=0; i<pts.length; i++) {
+          const c=pts[i], n=pts[(i+1)%pts.length];
+          mctx.bezierCurveTo(c.cpOut.x,c.cpOut.y, n.cpIn.x,n.cpIn.y, n.x,n.y);
+        }
+        if (mask.closed!==false) mctx.closePath();
+      } else {
+        mctx.rect(mask.x-mask.w/2,mask.y-mask.h/2,mask.w,mask.h);
+      }
       mctx.fill(); mctx.restore();
     });
     bctx.save(); bctx.globalCompositeOperation="destination-in"; bctx.setTransform(1,0,0,1,0,0); bctx.drawImage(pool.mask,0,0); bctx.restore();
@@ -522,6 +533,12 @@ const Renderer = (() => {
       const M=worldMatrix(layer, ts);
       bctx.save(); bctx.globalAlpha=1/samples;
       bctx.setTransform(q*M[0],q*M[1],q*M[2],q*M[3],q*M[4],q*M[5]);
+      const rx=(evalProp(layer.props.rotationX,ts)||0)*Math.PI/180;
+      const ry=(evalProp(layer.props.rotationY,ts)||0)*Math.PI/180;
+      if (Math.abs(rx)>0.001||Math.abs(ry)>0.001) {
+        const cosX=Math.cos(rx), cosY=Math.cos(ry), sinX=Math.sin(rx), sinY=Math.sin(ry);
+        bctx.transform(cosY, sinX*sinY*0.5, sinY*0.5, cosX, 0, 0);
+      }
       drawContent(bctx, layer, ct, opts);
       bctx.restore();
     }
@@ -600,7 +617,13 @@ const Renderer = (() => {
     ctx.restore();
   }
 
-  function draw(ctx, t, opts = {}) { drawComp(ctx, App.comp, t, opts); }
+  function draw(ctx, t, opts = {}) {
+    if (!opts.skipRam && typeof RamPreview !== "undefined" && RamPreview.has(t)) {
+      const bm = RamPreview.getFrame(t);
+      if (bm) { ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height); ctx.drawImage(bm,0,0,ctx.canvas.width,ctx.canvas.height); ctx.restore(); return; }
+    }
+    drawComp(ctx, App.comp, t, opts);
+  }
 
   function corners(layer, t) {
     const M=worldMatrix(layer,t), [w,h]=contentSize(layer);

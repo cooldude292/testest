@@ -706,3 +706,63 @@ kbd {
   position: absolute; width: 8px; height: 8px; border-radius: 50%;
   background: var(--green); border: 1.5px solid #0f1011; pointer-events: none;
 }
+
+/* ─── Settings modal ─────────────────────────────────────────── */
+.settings-modal { width: 480px; max-width: 96vw; }
+.settings-head {
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-3); margin: 16px 0 8px; padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-head:first-child { margin-top: 4px; }
+
+/* ─── 3D rotation hint badge ─────────────────────────────────── */
+.badge-3d {
+  display: inline-block; font-size: 8px; font-weight: 700;
+  background: rgba(94,106,210,0.2); color: var(--accent-bright);
+  border-radius: 3px; padding: 1px 4px; margin-left: 4px; vertical-align: middle;
+}
+
+/* ─── RAM preview indicator ──────────────────────────────────── */
+.hud-ram {
+  font-size: 9px; color: var(--green); font-weight: 600; padding: 0 4px;
+  background: rgba(76,183,130,0.12); border-radius: 3px; white-space: nowrap;
+}
+
+/* ─── Motion tracker / warp stabilizer ──────────────────────── */
+.track-progress {
+  font-size: 10px; color: var(--text-3); margin-top: 4px;
+  background: var(--surface-2); border-radius: 3px; padding: 3px 6px;
+}
+
+/* ─── Pen tool ───────────────────────────────────────────────── */
+#viewport.pen-mode { cursor: crosshair !important; }
+.hud-btn.pen-active { color: #ffa500; background: rgba(255,165,0,0.15); }
+
+/* ─── Desktop download button ────────────────────────────────── */
+#btn-desktop { gap: 4px; }
+
+/* ─── EQ controls ─────────────────────────────────────────────── */
+.eq-head {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-3); margin: 8px 0 4px;
+}
+
+/* ─── Tracker overlay (inside video layer panel) ─────────────── */
+.tracker-row { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+.tracker-status { font-size: 11px; color: var(--text-3); flex: 1; }
+
+/* ─── Settings form ──────────────────────────────────────────── */
+#settings-body h4.settings-head { margin-top: 16px; }
+#settings-body .form-row { padding: 4px 0; }
+#settings-body .form-row label { min-width: 160px; color: var(--text-2); font-size: 12px; }
+#settings-body .form-row select,
+#settings-body .form-row input[type=number] {
+  flex: 1; max-width: 180px;
+}
+
+/* ─── Export format updates ──────────────────────────────────── */
+#export-format option[value=mp4]:before { content: "★ "; }
+
+/* ─── Pen path points in viewport (orange overlay) ──────────── */
+canvas.pen-active { cursor: crosshair; }

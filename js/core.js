@@ -362,6 +362,8 @@ function makeLayer(type, opts = {}) {
       position: animProp([c.width / 2, c.height / 2]),
       scale: animProp([100, 100]),
       rotation: animProp(0),
+      rotationX: animProp(0),
+      rotationY: animProp(0),
       opacity: animProp(100),
       anchor: animProp([0, 0]),
     },
@@ -380,7 +382,7 @@ function makeLayer(type, opts = {}) {
                     repeatCount:1,repeatOffsetX:0,repeatOffsetY:0,repeatRotation:0,repeatScale:100,repeatOpacity:100 };
       break;
     case "image": case "video": base.data = { assetId: opts.assetId || null }; break;
-    case "audio": base.data = { assetId: opts.assetId || null, volume: 100 }; break;
+    case "audio": base.data = { assetId: opts.assetId || null, volume: 100, eqLow: 0, eqMid: 0, eqHigh: 0 }; break;
     case "comp": base.data = { compId: opts.compId || null }; break;
     case "adjust": case "nullobj": base.data = {}; break;
   }
@@ -388,8 +390,8 @@ function makeLayer(type, opts = {}) {
   return base;
 }
 
-const PROP_LABELS = { position:"Position",scale:"Scale",rotation:"Rotation",opacity:"Opacity",anchor:"Anchor" };
-const PROP_ORDER = ["position","scale","rotation","opacity","anchor"];
+const PROP_LABELS = { position:"Position",scale:"Scale",rotation:"Rotation",rotationX:"Rotation X",rotationY:"Rotation Y",opacity:"Opacity",anchor:"Anchor" };
+const PROP_ORDER = ["position","scale","rotation","rotationX","rotationY","opacity","anchor"];
 
 const Layers = {
   find: id => App.layers.find(l => l.id === id) || null,
@@ -459,7 +461,18 @@ const Layers = {
   },
   addMask(layer, shape) {
     const [w, h] = contentSize(layer);
-    layer.masks.push({ id: uid(), shape: shape || "rect", mode: "add", x: 0, y: 0, w: Math.round(w * 0.8), h: Math.round(h * 0.8), feather: 0 });
+    if (shape === "path") {
+      const r = Math.min(w, h) * 0.35;
+      layer.masks.push({ id: uid(), shape: "path", mode: "add", feather: 0, closed: true,
+        points: [
+          { x: 0, y: -r, cpIn: { x: -r*0.55, y: -r }, cpOut: { x: r*0.55, y: -r } },
+          { x: r, y: 0, cpIn: { x: r, y: -r*0.55 }, cpOut: { x: r, y: r*0.55 } },
+          { x: 0, y: r, cpIn: { x: r*0.55, y: r }, cpOut: { x: -r*0.55, y: r } },
+          { x: -r, y: 0, cpIn: { x: -r, y: r*0.55 }, cpOut: { x: -r, y: -r*0.55 } },
+        ] });
+    } else {
+      layer.masks.push({ id: uid(), shape: shape || "rect", mode: "add", x: 0, y: 0, w: Math.round(w * 0.8), h: Math.round(h * 0.8), feather: 0 });
+    }
     App.emit("project");
   },
   enableTimeRemap(layer) {
@@ -571,8 +584,11 @@ const AudioEngine = {
     this.ensure();
     if (!this.sources.has(asset.id) && asset.el) {
       const src = this.ctx.createMediaElementSource(asset.el), gain = this.ctx.createGain();
-      src.connect(gain); gain.connect(this.masterGain);
-      this.sources.set(asset.id, { src, gain });
+      const low = this.ctx.createBiquadFilter(); low.type = "lowshelf"; low.frequency.value = 250;
+      const mid = this.ctx.createBiquadFilter(); mid.type = "peaking"; mid.frequency.value = 1000; mid.Q.value = 1;
+      const high = this.ctx.createBiquadFilter(); high.type = "highshelf"; high.frequency.value = 4000;
+      src.connect(gain); gain.connect(low); low.connect(mid); mid.connect(high); high.connect(this.masterGain);
+      this.sources.set(asset.id, { src, gain, low, mid, high });
     }
     return this.sources.get(asset.id);
   },
@@ -596,7 +612,10 @@ const AudioEngine = {
       if (l.type !== "audio") return;
       const a = Assets.find(l.data.assetId); if (!a || !a.el) return;
       const node = this.route(a);
-      if (node) node.gain.gain.value = (App.muted ? 0 : 1) * (l.data.volume ?? 100) / 100;
+      if (node) {
+        node.gain.gain.value = (App.muted ? 0 : 1) * (l.data.volume ?? 100) / 100;
+        if (node.low) { node.low.gain.value = l.data.eqLow ?? 0; node.mid.gain.value = l.data.eqMid ?? 0; node.high.gain.value = l.data.eqHigh ?? 0; }
+      }
       const el = a.el, active = App.playing && l.visible && t >= l.inPoint && t < l.outPoint;
       if (active) {
         if (this.ctx && this.ctx.state === "suspended") this.ctx.resume();
@@ -693,6 +712,9 @@ function migrateLayer(l) {
   l.posterizeTime = l.posterizeTime ?? false; l.posterizeTimeFPS = l.posterizeTimeFPS ?? 12;
   l.notes = l.notes ?? ""; l.collapseTransform = l.collapseTransform ?? false;
   l.timeRemap = l.timeRemap ?? null;
+  if (!l.props.rotationX) l.props.rotationX = animProp(0);
+  if (!l.props.rotationY) l.props.rotationY = animProp(0);
+  if (l.type === "audio") { l.data.eqLow = l.data.eqLow ?? 0; l.data.eqMid = l.data.eqMid ?? 0; l.data.eqHigh = l.data.eqHigh ?? 0; }
   if (l.type === "shape") {
     l.data.trimStart = l.data.trimStart ?? 0; l.data.trimEnd = l.data.trimEnd ?? 100;
     l.data.trimOffset = l.data.trimOffset ?? 0; l.data.trimEnabled = l.data.trimEnabled ?? false;

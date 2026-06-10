@@ -107,6 +107,7 @@ const Viewport = (() => {
     drawGizmo();
     drawSnapGuides();
     drawMarquee();
+    drawPenPath();
     updateFps();
   }
 
@@ -328,6 +329,9 @@ const Viewport = (() => {
       return;
     }
     if (e.button !== 0) return;
+
+    // pen tool takes priority
+    if (penMode) { penPointerDown(e); return; }
 
     const rect = canvas.getBoundingClientRect();
     const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
@@ -668,11 +672,10 @@ const Viewport = (() => {
     });
 
     canvas.addEventListener("pointermove", ev => {
-      if (MotionSketch.isRecording()) {
-        const r = canvas.getBoundingClientRect();
-        const [wx, wy] = screenToComp(ev.clientX - r.left, ev.clientY - r.top);
-        MotionSketch.recordPos(wx, wy);
-      }
+      const r = canvas.getBoundingClientRect();
+      const [wx, wy] = screenToComp(ev.clientX - r.left, ev.clientY - r.top);
+      if (MotionSketch.isRecording()) MotionSketch.recordPos(wx, wy);
+      if (penMode) { penHover = { x: wx, y: wy }; requestDraw(); }
     });
 
     document.getElementById("btn-grid").addEventListener("click", e => {
@@ -694,6 +697,13 @@ const Viewport = (() => {
       showGuides = !showGuides;
       e.currentTarget.classList.toggle("active", showGuides);
       requestDraw();
+    });
+    const penBtn = document.getElementById("btn-pen-tool");
+    if (penBtn) penBtn.addEventListener("click", () => togglePenTool());
+    // Escape key cancels pen tool
+    document.addEventListener("keydown", ev => {
+      if (penMode && ev.key === "Escape") { penPoints = []; penMode = false; canvas.style.cursor = ""; if (penBtn) penBtn.classList.remove("active"); requestDraw(); }
+      if (penMode && ev.key === "Enter" && penPoints.length >= 2) finalizePenPath(true);
     });
     document.getElementById("quality-select").addEventListener("change", e => {
       setQuality(parseFloat(e.target.value));
@@ -733,5 +743,142 @@ const Viewport = (() => {
 
   function currentScale() { return view.scale; }
 
-  return { init, requestDraw, fit, setZoom, setQuality, screenToComp, compToScreen, toggleGuides, currentScale };
+  /* ── pen tool ── */
+  let penMode = false;
+  let penPoints = [];  // [{x,y,cpIn:{x,y},cpOut:{x,y}}]
+  let penHover = null;
+
+  function togglePenTool() {
+    penMode = !penMode;
+    penPoints = [];
+    penHover = null;
+    const btn = document.getElementById("btn-pen-tool");
+    if (btn) btn.classList.toggle("active", penMode);
+    canvas.style.cursor = penMode ? "crosshair" : "";
+    toast(penMode ? "Pen tool on — click to add points, double-click or Enter to close" : "Pen tool off");
+    requestDraw();
+  }
+
+  function drawPenPath() {
+    if (!penMode && !penPoints.length) return;
+    if (!penMode) return;
+    const pts = penPoints;
+    if (!pts.length) return;
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,180,0,0.9)";
+    ctx.fillStyle = "rgba(255,180,0,0.9)";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([]);
+    if (pts.length >= 2) {
+      ctx.beginPath();
+      const [sx0, sy0] = compToScreen(pts[0].x, pts[0].y);
+      ctx.moveTo(sx0, sy0);
+      for (let i = 0; i < pts.length - 1; i++) {
+        const c = pts[i], n = pts[i+1];
+        const [cox, coy] = compToScreen(c.cpOut.x, c.cpOut.y);
+        const [cnx, cny] = compToScreen(n.cpIn.x, n.cpIn.y);
+        const [nx, ny] = compToScreen(n.x, n.y);
+        ctx.bezierCurveTo(cox, coy, cnx, cny, nx, ny);
+      }
+      if (penHover) {
+        const last = pts[pts.length-1];
+        const [cox, coy] = compToScreen(last.cpOut.x, last.cpOut.y);
+        const [hvx, hvy] = compToScreen(penHover.x, penHover.y);
+        ctx.bezierCurveTo(cox, coy, hvx, hvy, hvx, hvy);
+      }
+      ctx.stroke();
+    } else if (pts.length === 1 && penHover) {
+      const [sx0, sy0] = compToScreen(pts[0].x, pts[0].y);
+      const [hvx, hvy] = compToScreen(penHover.x, penHover.y);
+      ctx.beginPath(); ctx.moveTo(sx0, sy0); ctx.lineTo(hvx, hvy);
+      ctx.stroke();
+    }
+    // draw points and handles
+    pts.forEach((p, i) => {
+      const [px, py] = compToScreen(p.x, p.y);
+      // handles
+      if (i > 0) {
+        const [inx, iny] = compToScreen(p.cpIn.x, p.cpIn.y);
+        ctx.save(); ctx.strokeStyle="rgba(255,180,0,0.5)"; ctx.lineWidth=1;
+        ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(inx, iny); ctx.stroke();
+        ctx.fillStyle="#ffa500"; ctx.beginPath(); ctx.arc(inx, iny, 3, 0, Math.PI*2); ctx.fill(); ctx.restore();
+      }
+      if (i < pts.length-1) {
+        const [outx, outy] = compToScreen(p.cpOut.x, p.cpOut.y);
+        ctx.save(); ctx.strokeStyle="rgba(255,180,0,0.5)"; ctx.lineWidth=1;
+        ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(outx, outy); ctx.stroke();
+        ctx.fillStyle="#ffa500"; ctx.beginPath(); ctx.arc(outx, outy, 3, 0, Math.PI*2); ctx.fill(); ctx.restore();
+      }
+      // anchor
+      ctx.fillStyle = i === 0 ? "#fff" : "#0f1011";
+      ctx.strokeStyle = "#ffa500";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.rect(px - 4, py - 4, 8, 8);
+      ctx.fill(); ctx.stroke();
+    });
+    ctx.restore();
+  }
+
+  function penPointerDown(e) {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    const [wx, wy] = screenToComp(sx, sy);
+    // check if clicking near first point to close path
+    if (penPoints.length >= 3) {
+      const [fx, fy] = compToScreen(penPoints[0].x, penPoints[0].y);
+      if (Math.hypot(sx - fx, sy - fy) < 10) {
+        finalizePenPath(true);
+        return;
+      }
+    }
+    // double-click to finalize open path
+    if (e.detail >= 2 && penPoints.length >= 2) {
+      finalizePenPath(false);
+      return;
+    }
+    const pt = { x: wx, y: wy, cpIn: { x: wx, y: wy }, cpOut: { x: wx, y: wy } };
+    penPoints.push(pt);
+    // handle drag to set bezier handles
+    startDrag(e, {
+      cursor: "crosshair",
+      move(ev) {
+        const [dwx, dwy] = screenToComp(ev.clientX - rect.left, ev.clientY - rect.top);
+        const dx = dwx - wx, dy = dwy - wy;
+        pt.cpOut = { x: wx + dx, y: wy + dy };
+        pt.cpIn = { x: wx - dx, y: wy - dy };
+        requestDraw();
+      },
+    });
+    requestDraw();
+  }
+
+  function finalizePenPath(closed) {
+    if (penPoints.length < 2) { penPoints = []; penMode = false; requestDraw(); return; }
+    const layer = App.selectedLayer();
+    if (!layer || layer.type === "audio") {
+      toast("Select a layer to add a mask path");
+      penPoints = []; requestDraw(); return;
+    }
+    App.commit();
+    // convert pen points to mask coordinates (layer-local space via inverse world matrix)
+    const M = matInvert(worldMatrix(layer, App.time));
+    const localPts = penPoints.map(p => {
+      const [lx, ly] = matApply(M, p.x, p.y);
+      const [cpInX, cpInY] = matApply(M, p.cpIn.x, p.cpIn.y);
+      const [cpOutX, cpOutY] = matApply(M, p.cpOut.x, p.cpOut.y);
+      return { x: lx, y: ly, cpIn: { x: cpInX, y: cpInY }, cpOut: { x: cpOutX, y: cpOutY } };
+    });
+    layer.masks.push({ id: uid(), shape: "path", mode: "add", feather: 0, closed: !!closed, points: localPts });
+    App.emit("project");
+    toast("Bezier mask added");
+    penPoints = [];
+    penMode = false;
+    const btn = document.getElementById("btn-pen-tool");
+    if (btn) btn.classList.remove("active");
+    canvas.style.cursor = "";
+    requestDraw();
+  }
+
+  return { init, requestDraw, fit, setZoom, setQuality, screenToComp, compToScreen, toggleGuides, currentScale, togglePenTool, isPenMode: () => penMode };
 })();

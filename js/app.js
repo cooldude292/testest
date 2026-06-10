@@ -781,11 +781,75 @@ const Exporter = (() => {
     if (wasCancelled) toast("Export cancelled");
   }
 
+  async function exportMP4(opts) {
+    if (!window.VideoEncoder) {
+      toast("WebCodecs not supported in this browser. Using WebM instead.");
+      return exportWebM(opts);
+    }
+    const c = App.comp;
+    const [t0, t1] = rangeBounds(opts);
+    const frames = Math.max(1, Math.round((t1 - t0) * c.fps));
+    const cv = makeCanvas(opts.scale);
+    const cctx = cv.getContext("2d");
+    const W = cv.width, H = cv.height;
+    const fill = document.getElementById("export-progress-fill");
+    const label = document.getElementById("export-progress-label");
+    document.getElementById("export-progress").hidden = false;
+    document.getElementById("export-start").disabled = true;
+    cancelled = false;
+
+    // Check if mp4-muxer is available
+    if (typeof Muxer === "undefined" || !Muxer.Muxer) {
+      toast("mp4-muxer not loaded. Using PNG sequence instead.");
+      return exportPNGSeq(opts);
+    }
+
+    const muxer = new Muxer.Muxer({
+      target: new Muxer.ArrayBufferTarget(),
+      video: { codec: "avc", width: W, height: H },
+      fastStart: "in-memory",
+    });
+
+    const encoder = new VideoEncoder({
+      output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+      error: e => { toast("Encode error: " + e.message); },
+    });
+    encoder.configure({
+      codec: "avc1.42001f",
+      width: W, height: H,
+      bitrate: opts.bitrate || 8000000,
+      framerate: c.fps,
+    });
+
+    for (let f = 0; f < frames; f++) {
+      if (cancelled) { encoder.close(); return; }
+      const t = t0 + f / c.fps;
+      Renderer.draw(cctx, t, { scale: opts.scale });
+      const frame = new VideoFrame(cv, { timestamp: Math.round(f * 1e6 / c.fps), duration: Math.round(1e6 / c.fps) });
+      const keyFrame = f % Math.round(c.fps * 2) === 0;
+      encoder.encode(frame, { keyFrame });
+      frame.close();
+      fill.style.width = ((f + 1) / frames) * 100 + "%";
+      label.textContent = `Encoding frame ${f + 1} / ${frames}`;
+      if (f % 4 === 0) await new Promise(r => setTimeout(r, 0));
+    }
+
+    await encoder.flush();
+    encoder.close();
+    muxer.finalize();
+    const { buffer } = muxer.target;
+    const blob = new Blob([buffer], { type: "video/mp4" });
+    download(blob, `${App.project.name.replace(/\s+/g, "-")}.mp4`);
+    toast("MP4 export complete");
+    close();
+  }
+
   function start() {
     const opts = getOpts();
     if (opts.format === "png") exportPNG(opts);
     else if (opts.format === "pngseq") exportPNGSeq(opts);
     else if (opts.format === "gif") exportGIF(opts);
+    else if (opts.format === "mp4") exportMP4(opts);
     else exportWebM(opts);
   }
 
@@ -1140,6 +1204,25 @@ const Palette = (() => {
 
       // help
       { title: "Keyboard shortcuts", hint: "?", run: () => showShortcuts() },
+      { title: "Settings…", hint: "⚙", run: () => Settings.openModal() },
+
+      // RAM preview
+      { title: "Build RAM preview", run: () => RamPreview.build() },
+      { title: "Clear RAM preview", run: () => { RamPreview.clear(); toast("RAM preview cleared"); } },
+
+      // pen tool
+      { title: "Toggle pen tool", hint: "P", run: () => typeof Viewport !== "undefined" && Viewport.togglePenTool() },
+
+      // motion / stabilizer
+      sel && sel.type === "video" && { title: "Warp stabilize this layer", run: () => WarpStabilizer.stabilize(sel) },
+      sel && { title: "Track motion to layer…", run: () => {
+        const vidL = App.layers.find(l => l.type === "video");
+        if (!vidL) { toast("No video layer found"); return; }
+        MotionTracker.track(vidL, sel);
+      }},
+
+      // desktop
+      { title: "Download desktop app (Electron)", run: () => downloadDesktopApp() },
 
       // dynamic: add any effect to selected layer
       ...allEffects,
@@ -1202,6 +1285,459 @@ const Palette = (() => {
 
   return { init, open, close, isOpen };
 })();
+
+/* ── Settings ── */
+const Settings = (() => {
+  const DEFAULTS = {
+    defaultFPS: 30, defaultWidth: 1280, defaultHeight: 720,
+    exportQuality: "high", autosaveInterval: 25,
+    snapGrid: false, previewQuality: 1, theme: "dark",
+    ramPreviewMaxFrames: 300, showTooltips: true,
+    rendererQuality: "auto", audioSampleRate: 44100,
+  };
+  let data = { ...DEFAULTS };
+
+  function load() {
+    try { Object.assign(data, JSON.parse(localStorage.getItem("lumen.settings") || "{}")); } catch (e) {}
+  }
+  function save() {
+    try { localStorage.setItem("lumen.settings", JSON.stringify(data)); } catch (e) {}
+  }
+  function get(key) { return data[key] ?? DEFAULTS[key]; }
+  function set(key, value) { data[key] = value; save(); App.emit("settings"); }
+
+  function openModal() {
+    const ov = document.getElementById("settings-overlay");
+    if (!ov) return;
+    ov.hidden = false;
+    const body = document.getElementById("settings-body");
+    if (!body) return;
+    body.innerHTML = "";
+
+    const mk = (label, ctrl) => {
+      const row = document.createElement("div");
+      row.className = "form-row";
+      const l = document.createElement("label");
+      l.textContent = label;
+      row.append(l, ctrl);
+      return row;
+    };
+    const sel = (key, opts) => {
+      const s = document.createElement("select");
+      opts.forEach(([v, lab]) => { const o = document.createElement("option"); o.value = v; o.textContent = lab; s.appendChild(o); });
+      s.value = String(get(key));
+      s.addEventListener("change", () => set(key, s.options[s.selectedIndex].value));
+      return s;
+    };
+    const num = (key, min, max, step) => {
+      const i = document.createElement("input");
+      i.type = "number"; i.value = get(key); i.min = min; i.max = max; i.step = step || 1;
+      i.addEventListener("change", () => { const v = parseFloat(i.value); if (!isNaN(v)) set(key, clamp(v, min, max)); });
+      i.addEventListener("keydown", e => e.stopPropagation());
+      return i;
+    };
+    const chk = (key, label) => {
+      const lab = document.createElement("label");
+      lab.style.cssText = "display:flex;align-items:center;gap:6px";
+      const c = document.createElement("input");
+      c.type = "checkbox"; c.checked = !!get(key);
+      c.addEventListener("change", () => set(key, c.checked));
+      lab.append(c, document.createTextNode(label));
+      return lab;
+    };
+
+    body.append(
+      Object.assign(document.createElement("h4"), { textContent: "Composition Defaults", className: "settings-head" }),
+      mk("Default FPS", sel("defaultFPS", [["24","24 fps"],["25","25 fps (PAL)"],["30","30 fps"],["60","60 fps"]])),
+      mk("Default Size", sel("defaultWidth", [["1920","1920 (1080p)"],["1280","1280 (720p)"],["3840","3840 (4K)"],["1080","1080 (Square/Vertical)"]])),
+
+      Object.assign(document.createElement("h4"), { textContent: "Export", className: "settings-head" }),
+      mk("Export Quality", sel("exportQuality", [["high","High"],["medium","Medium"],["low","Low"]])),
+      mk("Preview Quality", sel("previewQuality", [["1","Full"],["0.5","Half"],["0.25","Quarter"]])),
+      mk("RAM Preview Max Frames", num("ramPreviewMaxFrames", 30, 1800, 30)),
+
+      Object.assign(document.createElement("h4"), { textContent: "Interface", className: "settings-head" }),
+      mk("Autosave Interval (s)", num("autosaveInterval", 0, 300, 5)),
+      mk("", chk("showTooltips", "Show tooltips")),
+      mk("", chk("snapGrid", "Snap to grid")),
+    );
+  }
+
+  function closeModal() {
+    const ov = document.getElementById("settings-overlay");
+    if (ov) ov.hidden = true;
+  }
+
+  return { load, save, get, set, openModal, closeModal, data };
+})();
+
+/* ── MediaStore: persist video/audio blobs in IndexedDB ── */
+const MediaStore = (() => {
+  let db = null;
+  const DB_NAME = "lumen-media-v1";
+  const STORE = "blobs";
+
+  async function openDB() {
+    if (db) return db;
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = e => {
+        const d = e.target.result;
+        if (!d.objectStoreNames.contains(STORE)) d.createObjectStore(STORE, { keyPath: "id" });
+      };
+      req.onsuccess = e => { db = e.target.result; resolve(db); };
+      req.onerror = e => reject(e.target.error);
+    });
+  }
+
+  async function put(assetId, blob, type) {
+    const d = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = d.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).put({ id: assetId, blob, type });
+      tx.oncomplete = resolve; tx.onerror = e => reject(e.target.error);
+    });
+  }
+
+  async function get(assetId) {
+    const d = await openDB();
+    return new Promise((resolve, reject) => {
+      const req = d.transaction(STORE, "readonly").objectStore(STORE).get(assetId);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = e => reject(e.target.error);
+    });
+  }
+
+  async function remove(assetId) {
+    const d = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = d.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).delete(assetId);
+      tx.oncomplete = resolve; tx.onerror = e => reject(e.target.error);
+    });
+  }
+
+  return { put, get, remove };
+})();
+
+/* ── RAM Preview: cache frames as ImageBitmaps for smooth playback ── */
+const RamPreview = (() => {
+  const cache = new Map();
+  let building = false, cancelled = false;
+
+  function clear() {
+    cache.forEach(b => { try { b.close(); } catch(e){} });
+    cache.clear();
+    App.emit("ramprev");
+  }
+
+  async function build(onProgress) {
+    if (building) { cancelled = true; await new Promise(r => setTimeout(r, 50)); }
+    cancelled = false;
+    building = true;
+    clear();
+    const c = App.comp;
+    const maxFrames = Settings.get("ramPreviewMaxFrames");
+    const t0 = c.workEnd > c.workStart + 0.05 ? c.workStart : 0;
+    const t1 = c.workEnd > c.workStart + 0.05 ? c.workEnd : c.duration;
+    const totalFrames = Math.min(maxFrames, Math.round((t1 - t0) * c.fps));
+    const q = Settings.get("previewQuality");
+    const cv = document.createElement("canvas");
+    cv.width = Math.max(2, Math.round(c.width * q));
+    cv.height = Math.max(2, Math.round(c.height * q));
+    const cctx = cv.getContext("2d");
+
+    for (let f = 0; f < totalFrames; f++) {
+      if (cancelled) { building = false; return; }
+      const t = t0 + f / c.fps;
+      Renderer.draw(cctx, t, { scale: q, skipRam: true });
+      try {
+        const bm = await createImageBitmap(cv);
+        cache.set(snapT(t), bm);
+      } catch (e) { /* best-effort */ }
+      if (onProgress) onProgress((f + 1) / totalFrames, f + 1, totalFrames);
+      if (f % 4 === 0) await new Promise(r => setTimeout(r, 0));
+    }
+    building = false;
+    toast(`RAM preview: ${cache.size} frames cached`);
+    App.emit("ramprev");
+  }
+
+  function has(t) { return cache.has(snapT(t)); }
+  function getFrame(t) { return cache.get(snapT(t)) || null; }
+  function isBuilding() { return building; }
+  function stop() { cancelled = true; }
+  function size() { return cache.size; }
+
+  return { build, clear, has, getFrame, isBuilding, stop, size };
+})();
+
+/* ── Motion Tracker: SSD-based 2D point tracking ── */
+const MotionTracker = (() => {
+  async function track(videoLayer, targetLayer) {
+    const asset = Assets.find(videoLayer.data.assetId);
+    if (!asset || !asset.el || asset.type !== "video") throw new Error("No video asset");
+    const vid = asset.el;
+    const c = App.comp;
+    const t0 = videoLayer.inPoint, t1 = videoLayer.outPoint;
+    const frames = Math.min(Math.round((t1 - t0) * c.fps), 300);
+    if (frames < 2) throw new Error("Layer too short to track");
+
+    const trackW = 60, trackH = 60;
+    const scanW = 120, scanH = 120;
+    const cv = document.createElement("canvas");
+    cv.width = Math.max(scanW * 2, 320); cv.height = Math.max(scanH * 2, 240);
+    const gctx = cv.getContext("2d", { willReadFrequently: true });
+
+    let templateData = null, lastX = c.width / 2, lastY = c.height / 2;
+    const keyframes = [];
+
+    for (let f = 0; f < frames; f++) {
+      const t = t0 + f / c.fps;
+      const localT = mediaTime(videoLayer, t);
+      await new Promise(res => {
+        vid.currentTime = clamp(localT, 0, (vid.duration || 1) - 0.001);
+        vid.onseeked = res;
+        setTimeout(res, 200);
+      });
+
+      const vw = vid.videoWidth || 320, vh = vid.videoHeight || 240;
+      cv.width = vw; cv.height = vh;
+      try { gctx.drawImage(vid, 0, 0, vw, vh); } catch(e) { continue; }
+
+      const cx = Math.round(clamp(lastX, trackW / 2, vw - trackW / 2));
+      const cy = Math.round(clamp(lastY, trackH / 2, vh - trackH / 2));
+
+      if (!templateData) {
+        // First frame: sample template region
+        const rx = cx - trackW / 2, ry = cy - trackH / 2;
+        templateData = gctx.getImageData(rx, ry, trackW, trackH).data;
+        keyframes.push({ t, x: cx / vw * c.width, y: cy / vh * c.height });
+        continue;
+      }
+
+      // Search for best match via SSD
+      const sx = Math.max(trackW / 2, cx - scanW / 2), ex = Math.min(vw - trackW / 2, cx + scanW / 2);
+      const sy = Math.max(trackH / 2, cy - scanH / 2), ey = Math.min(vh - trackH / 2, cy + scanH / 2);
+      let bestSSD = Infinity, bestX = cx, bestY = cy;
+
+      for (let ty = sy; ty <= ey; ty += 4) {
+        for (let tx = sx; tx <= ex; tx += 4) {
+          const candidate = gctx.getImageData(tx - trackW / 2, ty - trackH / 2, trackW, trackH).data;
+          let ssd = 0;
+          for (let i = 0; i < candidate.length; i += 16) {
+            const dr = candidate[i] - templateData[i];
+            const dg = candidate[i+1] - templateData[i+1];
+            const db = candidate[i+2] - templateData[i+2];
+            ssd += dr*dr + dg*dg + db*db;
+          }
+          if (ssd < bestSSD) { bestSSD = ssd; bestX = tx; bestY = ty; }
+        }
+      }
+
+      lastX = bestX; lastY = bestY;
+      templateData = gctx.getImageData(bestX - trackW / 2, bestY - trackH / 2, trackW, trackH).data;
+      keyframes.push({ t, x: bestX / vw * c.width, y: bestY / vh * c.height });
+
+      if (f % 5 === 0) await new Promise(r => setTimeout(r, 0));
+    }
+
+    if (keyframes.length < 2) throw new Error("Tracking produced no keyframes");
+
+    App.commit();
+    const p = targetLayer.props.position;
+    p.anim = true;
+    p.keys = keyframes.map(k => ({ t: snapT(k.t), v: [Math.round(k.x), Math.round(k.y)], ease: "linear" }));
+    App.emit("project");
+    toast(`Tracking complete: ${keyframes.length} keyframes applied`);
+  }
+
+  return { track };
+})();
+
+/* ── Warp Stabilizer (basic) ── */
+const WarpStabilizer = (() => {
+  async function analyze(videoLayer) {
+    const asset = Assets.find(videoLayer.data.assetId);
+    if (!asset || !asset.el || asset.type !== "video") throw new Error("No video asset");
+    const vid = asset.el;
+    const c = App.comp;
+    const t0 = videoLayer.inPoint, t1 = videoLayer.outPoint;
+    const frames = Math.min(Math.round((t1 - t0) * c.fps), 120);
+    const cv = document.createElement("canvas");
+    cv.width = 160; cv.height = 90;
+    const gctx = cv.getContext("2d", { willReadFrequently: true });
+    const positions = [];
+
+    for (let f = 0; f < frames; f++) {
+      const t = t0 + f / c.fps;
+      vid.currentTime = clamp(mediaTime(videoLayer, t), 0, vid.duration - 0.001);
+      await new Promise(res => { vid.onseeked = res; setTimeout(res, 150); });
+      gctx.drawImage(vid, 0, 0, 160, 90);
+      const d = gctx.getImageData(0, 0, 160, 90).data;
+      let cx = 0, cy = 0, weight = 0;
+      for (let py = 0; py < 90; py += 3) {
+        for (let px = 0; px < 160; px += 3) {
+          const i = (py * 160 + px) * 4;
+          const lum = 0.2126 * d[i] + 0.7152 * d[i+1] + 0.0722 * d[i+2];
+          const edge = Math.abs(lum - (py > 0 ? 0.2126*d[((py-3)*160+px)*4]+0.7152*d[((py-3)*160+px)*4+1]+0.0722*d[((py-3)*160+px)*4+2] : lum));
+          cx += px * edge; cy += py * edge; weight += edge;
+        }
+      }
+      if (weight > 0) positions.push({ t, cx: cx / weight / 160 * c.width, cy: cy / weight / 90 * c.height });
+      if (f % 5 === 0) await new Promise(r => setTimeout(r, 0));
+    }
+    return positions;
+  }
+
+  async function stabilize(videoLayer) {
+    toast("Analyzing motion…");
+    try {
+      const positions = await analyze(videoLayer);
+      if (positions.length < 2) throw new Error("Not enough frames");
+      const avgX = positions.reduce((s, p) => s + p.cx, 0) / positions.length;
+      const avgY = positions.reduce((s, p) => s + p.cy, 0) / positions.length;
+      App.commit();
+      const p = videoLayer.props.position;
+      p.anim = true;
+      p.keys = positions.map(pos => ({
+        t: snapT(pos.t),
+        v: [Math.round(avgX * 2 - pos.cx), Math.round(avgY * 2 - pos.cy)],
+        ease: "linear",
+      }));
+      App.emit("project");
+      toast("Warp stabilizer applied — " + positions.length + " keyframes");
+    } catch (e) { toast("Stabilizer failed: " + e.message); }
+  }
+
+  return { stabilize };
+})();
+
+/* ── Desktop app download (Electron ZIP) ── */
+async function downloadDesktopApp() {
+  toast("Building desktop app package…");
+  try {
+    const enc = new TextEncoder();
+    // Fetch source files
+    const fetchText = async url => {
+      try { const r = await fetch(url); return await r.text(); } catch (e) { return ""; }
+    };
+    const [indexHtml, stylesCss, coreJs, rendererJs, timelineJs, viewportJs, panelsJs, appJs] = await Promise.all([
+      fetchText("index.html"), fetchText("styles.css"),
+      fetchText("js/core.js"), fetchText("js/renderer.js"),
+      fetchText("js/timeline.js"), fetchText("js/viewport.js"),
+      fetchText("js/panels.js"), fetchText("js/app.js"),
+    ]);
+
+    const mainJs = `const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const path = require('path');
+const fs = require('fs');
+
+function createWindow() {
+  const win = new BrowserWindow({
+    width: 1600, height: 960, minWidth: 900, minHeight: 600,
+    backgroundColor: '#101216',
+    webPreferences: { nodeIntegration: false, contextIsolation: true, preload: path.join(__dirname, 'preload.js') }
+  });
+  win.loadFile('index.html');
+  win.setTitle('Lumen — Motion Studio');
+}
+
+ipcMain.handle('dialog:openFile', async (_, opts) => {
+  const result = await dialog.showOpenDialog(opts || {});
+  if (result.canceled) return null;
+  const filePath = result.filePaths[0];
+  return { filePath, content: fs.readFileSync(filePath, 'utf8') };
+});
+
+ipcMain.handle('dialog:saveFile', async (_, { defaultPath, content }) => {
+  const result = await dialog.showSaveDialog({ defaultPath });
+  if (result.canceled) return null;
+  fs.writeFileSync(result.filePath, content, 'utf8');
+  return result.filePath;
+});
+
+ipcMain.handle('dialog:saveBuffer', async (_, { defaultPath, buffer }) => {
+  const result = await dialog.showSaveDialog({ defaultPath });
+  if (result.canceled) return null;
+  fs.writeFileSync(result.filePath, Buffer.from(buffer));
+  return result.filePath;
+});
+
+app.whenReady().then(createWindow);
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+`;
+
+    const preloadJs = `const { contextBridge, ipcRenderer } = require('electron');
+contextBridge.exposeInMainWorld('electronAPI', {
+  openFile: (opts) => ipcRenderer.invoke('dialog:openFile', opts),
+  saveFile: (opts) => ipcRenderer.invoke('dialog:saveFile', opts),
+  saveBuffer: (opts) => ipcRenderer.invoke('dialog:saveBuffer', opts),
+});
+`;
+
+    const packageJson = JSON.stringify({
+      name: "lumen-motion-studio",
+      version: "1.0.0",
+      description: "Lumen — Motion design in your browser and desktop",
+      main: "electron/main.js",
+      scripts: {
+        start: "electron .",
+        build: "electron-builder",
+      },
+      dependencies: {},
+      devDependencies: {
+        electron: "^28.0.0",
+        "electron-builder": "^24.0.0",
+      },
+      build: {
+        appId: "com.lumen.motionstudio",
+        productName: "Lumen",
+        directories: { output: "dist" },
+        files: ["**/*", "!dist/*", "!node_modules/**/electron/dist/**"],
+      },
+    }, null, 2);
+
+    const readmeTxt = `# Lumen Motion Studio — Desktop App
+
+## Quick Start
+1. Install Node.js (https://nodejs.org)
+2. Run: npm install
+3. Run: npm start
+
+## Build Distributable
+  npm run build
+
+The built app will be in the dist/ folder.
+
+## System Requirements
+- Windows 10+, macOS 10.13+, or Linux
+- 4GB RAM minimum
+`;
+
+    const entries = [
+      { name: "index.html", data: enc.encode(indexHtml) },
+      { name: "styles.css", data: enc.encode(stylesCss) },
+      { name: "js/core.js", data: enc.encode(coreJs) },
+      { name: "js/renderer.js", data: enc.encode(rendererJs) },
+      { name: "js/timeline.js", data: enc.encode(timelineJs) },
+      { name: "js/viewport.js", data: enc.encode(viewportJs) },
+      { name: "js/panels.js", data: enc.encode(panelsJs) },
+      { name: "js/app.js", data: enc.encode(appJs) },
+      { name: "electron/main.js", data: enc.encode(mainJs) },
+      { name: "electron/preload.js", data: enc.encode(preloadJs) },
+      { name: "package.json", data: enc.encode(packageJson) },
+      { name: "README.md", data: enc.encode(readmeTxt) },
+    ];
+
+    const zip = Zip.build(entries);
+    Exporter.download(zip, "lumen-desktop-app.zip");
+    toast("Desktop app downloaded — extract and run: npm install && npm start");
+  } catch (e) {
+    toast("Download failed: " + e.message);
+  }
+}
 
 /* ── project save / open / autosave ── */
 function saveProject() {
@@ -1396,7 +1932,8 @@ function buildDemo() {
 
 /* ── boot ── */
 function initApp() {
-  App.snapToGrid = false;
+  Settings.load();
+  App.snapToGrid = Settings.get("snapGrid");
   App.project = defaultProject();
   App.project.name = "Welcome to Lumen";
   buildDemo();
@@ -1429,6 +1966,32 @@ function initApp() {
   document.getElementById("shortcuts-close").addEventListener("click", () => {
     document.getElementById("shortcuts-overlay").hidden = true;
   });
+
+  // Settings gear
+  const settingsBtn = document.getElementById("btn-settings");
+  if (settingsBtn) settingsBtn.addEventListener("click", () => Settings.openModal());
+  const settingsClose = document.getElementById("settings-close");
+  if (settingsClose) settingsClose.addEventListener("click", () => Settings.closeModal());
+  const settingsOverlay = document.getElementById("settings-overlay");
+  if (settingsOverlay) {
+    settingsOverlay.addEventListener("pointerdown", e => { if (e.target === settingsOverlay) Settings.closeModal(); });
+  }
+
+  // Desktop download
+  const desktopBtn = document.getElementById("btn-desktop");
+  if (desktopBtn) desktopBtn.addEventListener("click", downloadDesktopApp);
+
+  // RAM preview button
+  const ramBtn = document.getElementById("btn-ram-preview");
+  if (ramBtn) {
+    ramBtn.addEventListener("click", () => {
+      if (RamPreview.isBuilding()) { RamPreview.stop(); toast("RAM preview stopped"); }
+      else RamPreview.build(null);
+    });
+  }
+
+  // Escape for settings
+  document.addEventListener("keydown_settings", () => {});  // placeholder, handled in main keydown
   document.getElementById("shortcuts-overlay").addEventListener("pointerdown", e => {
     if (e.target.id === "shortcuts-overlay") e.target.hidden = true;
   });
@@ -1492,7 +2055,8 @@ function initApp() {
   document.getElementById("export-cancel").addEventListener("click", () => Exporter.close());
   document.getElementById("export-start").addEventListener("click", () => Exporter.start());
   document.getElementById("export-format").addEventListener("change", e => {
-    document.getElementById("export-quality-row").style.display = e.target.value === "webm" ? "" : "none";
+    const f = e.target.value;
+    document.getElementById("export-quality-row").style.display = (f === "webm" || f === "mp4") ? "" : "none";
   });
 
   /* events → UI */
@@ -1575,6 +2139,7 @@ function initApp() {
         else if (!document.getElementById("shortcuts-overlay").hidden) document.getElementById("shortcuts-overlay").hidden = true;
         else if (!document.getElementById("export-overlay").hidden) Exporter.close();
         else if (!document.getElementById("library-overlay").hidden) LibraryModal.close();
+        else if (document.getElementById("settings-overlay") && !document.getElementById("settings-overlay").hidden) Settings.closeModal();
         else { App.selectedKeys = []; App.select(null); }
         return;
       case "Tab": e.preventDefault(); togglePanels(); return;
@@ -1593,7 +2158,7 @@ function initApp() {
       case "k": UICommands.jumpKey(1); return;
       case "[": e.shiftKey ? UICommands.nudgeTime(-Math.round((App.time - (sel ? sel.inPoint : 0)) * App.comp.fps)) : UICommands.trimToPlayhead("in"); return;
       case "]": UICommands.trimToPlayhead("out"); return;
-      case "p": if (sel) Timeline.revealProp(sel, "position"); return;
+      case "p": if (e.shiftKey) { Viewport.togglePenTool(); return; } if (sel) Timeline.revealProp(sel, "position"); return;
       case "s": if (sel) Timeline.revealProp(sel, "scale"); return;
       case "r": if (sel) Timeline.revealProp(sel, "rotation"); return;
       case "t": if (sel) Timeline.revealProp(sel, "opacity"); return;

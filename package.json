@@ -1,0 +1,49 @@
+{
+  "name": "lumen-motion-studio",
+  "version": "1.0.0",
+  "description": "Lumen — Browser-based motion design studio with AE-like features. Runs in the browser or as a desktop app via Electron.",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux"
+  },
+  "keywords": ["motion-design", "after-effects", "animation", "electron"],
+  "author": "Lumen",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.3.3",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.lumen.motionstudio",
+    "productName": "Lumen",
+    "copyright": "Lumen Motion Studio",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "index.html",
+      "styles.css",
+      "js/**/*",
+      "electron/**/*",
+      "!dist/**",
+      "!node_modules/**"
+    ],
+    "mac": {
+      "category": "public.app-category.video",
+      "icon": "build/icon.icns",
+      "target": ["dmg", "zip"]
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": ["nsis", "portable"]
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "target": ["AppImage", "deb"]
+    }
+  }
+}
