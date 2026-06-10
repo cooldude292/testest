@@ -1,4 +1,4 @@
-/* ─── Lumen app shell: playback, shortcuts, palette, export ────── */
+/* ─── Lumen app shell v3: playback, shortcuts, palette, export, library ── */
 "use strict";
 
 /* ── playback ── */
@@ -18,6 +18,7 @@ const Playback = (() => {
         }
         App.setTime(t, { playback: true });
         AudioEngine.sync();
+        if (MotionSketch.isRecording()) MotionSketch.onFrame();
       }
       lastTs = ts;
     } else {
@@ -27,6 +28,7 @@ const Playback = (() => {
   }
 
   function toggle() {
+    if (MotionSketch.isRecording()) { MotionSketch.stop(); return; }
     App.setPlaying(!App.playing);
     if (!App.playing) { Renderer.pauseAllVideos(); AudioEngine.pauseAll(); }
     else AudioEngine.sync();
@@ -42,6 +44,47 @@ const Playback = (() => {
 
   requestAnimationFrame(loop);
   return { toggle, step };
+})();
+
+/* ── motion sketch: record mouse position to keyframes ── */
+const MotionSketch = (() => {
+  let recording = false, sketchLayer = null, lastPos = null;
+
+  function start() {
+    const sel = App.selectedLayer();
+    if (!sel || sel.type === "audio") { toast("Select a layer first"); return; }
+    App.commit();
+    sketchLayer = sel;
+    sketchLayer.props.position.anim = true;
+    sketchLayer.props.position.keys = [];
+    recording = true;
+    App.setPlaying(true);
+    toast("Motion sketch: move mouse over viewport · Space to stop");
+  }
+
+  function onFrame() {
+    if (!recording || !lastPos || !sketchLayer) return;
+    Layers.upsertKeyObj(sketchLayer.props.position, App.time, lastPos.slice(), "linear");
+  }
+
+  function recordPos(wx, wy) {
+    if (!recording) return;
+    lastPos = [Math.round(wx * 10) / 10, Math.round(wy * 10) / 10];
+  }
+
+  function stop() {
+    if (!recording) return;
+    recording = false;
+    App.setPlaying(false);
+    if (sketchLayer && sketchLayer.props.position.keys.length) {
+      sketchLayer.props.position.keys.sort((a, b) => a.t - b.t);
+      App.emit("project");
+    }
+    toast("Motion sketch complete");
+    sketchLayer = null; lastPos = null;
+  }
+
+  return { start, stop, onFrame, recordPos, isRecording: () => recording };
 })();
 
 /* ── clipboard (layers, keyframes, effects) ── */
@@ -126,7 +169,7 @@ const UICommands = {
     const c = App.comp;
     ["position", "scale", "rotation", "opacity", "anchor"].forEach(n => {
       const p = layer.props[n];
-      p.anim = false; p.keys = []; p.loop = "none"; p.wiggle = null;
+      p.anim = false; p.keys = []; p.loop = "none"; p.wiggle = null; p.expr = null; p.exprEnabled = false;
     });
     layer.props.position.value = [c.width / 2, c.height / 2];
     layer.props.scale.value = [100, 100];
@@ -192,6 +235,16 @@ const UICommands = {
     App.emit("project");
     return true;
   },
+  nudgeScale(delta) {
+    const sel = App.selectedLayers().filter(l => !l.locked && l.type !== "audio");
+    if (!sel.length) return;
+    App.commit();
+    sel.forEach(l => {
+      const s = cloneVal(evalProp(l.props.scale, App.time));
+      Layers.setProp(l, "scale", [s[0] + delta, s[1] + delta]);
+    });
+    App.emit("project");
+  },
   nudgeTime(frames) {
     const sel = App.selectedLayers().filter(l => !l.locked);
     if (!sel.length) return false;
@@ -243,7 +296,199 @@ const UICommands = {
     const next = dir > 0 ? ms.find(x => x > t + 1e-6) : [...ms].reverse().find(x => x < t - 1e-6);
     if (next !== undefined) App.setTime(next);
   },
+  zoomToSelection() {
+    const sel = App.selectedLayer();
+    if (!sel) return;
+    const [x, y] = evalProp(sel.props.position, App.time);
+    Viewport.setZoom(Viewport.currentScale() * 1.5, undefined, undefined, x, y);
+    toast("Zoomed to selection");
+  },
+  snapToGrid(enable) {
+    App.snapToGrid = enable !== undefined ? enable : !App.snapToGrid;
+    toast(App.snapToGrid ? "Snap to grid on" : "Snap to grid off");
+  },
+  deleteGuides() {
+    App.commit();
+    App.comp.guides = [];
+    App.emit("project");
+    toast("Guides cleared");
+  },
 };
+
+/* ── IndexedDB project library ── */
+const ProjectLibrary = (() => {
+  let db = null;
+  const DB_NAME = "lumen-v3";
+  const STORE = "projects";
+
+  async function openDB() {
+    if (db) return db;
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = e => {
+        const d = e.target.result;
+        if (!d.objectStoreNames.contains(STORE))
+          d.createObjectStore(STORE, { keyPath: "id" });
+      };
+      req.onsuccess = e => { db = e.target.result; resolve(db); };
+      req.onerror = e => reject(e.target.error);
+    });
+  }
+
+  async function list() {
+    const d = await openDB();
+    return new Promise((resolve, reject) => {
+      const req = d.transaction(STORE, "readonly").objectStore(STORE).getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = e => reject(e.target.error);
+    });
+  }
+
+  async function save(name, overwriteId) {
+    const d = await openDB();
+    const entry = {
+      id: overwriteId || uid(),
+      name: name || App.project.name,
+      savedAt: Date.now(),
+      data: serializeProject(),
+    };
+    return new Promise((resolve, reject) => {
+      const tx = d.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).put(entry);
+      tx.oncomplete = () => resolve(entry);
+      tx.onerror = e => reject(e.target.error);
+    });
+  }
+
+  async function load(id) {
+    const d = await openDB();
+    return new Promise((resolve, reject) => {
+      const req = d.transaction(STORE, "readonly").objectStore(STORE).get(id);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = e => reject(e.target.error);
+    });
+  }
+
+  async function remove(id) {
+    const d = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = d.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).delete(id);
+      tx.oncomplete = resolve;
+      tx.onerror = e => reject(e.target.error);
+    });
+  }
+
+  return { list, save, load, remove };
+})();
+
+/* ── Library modal ── */
+const LibraryModal = (() => {
+  let overlay, listEl, nameInput;
+
+  async function refresh() {
+    listEl.innerHTML = '<div class="empty-hint pad" style="padding:16px">Loading…</div>';
+    try {
+      const items = await ProjectLibrary.list();
+      items.sort((a, b) => b.savedAt - a.savedAt);
+      listEl.innerHTML = "";
+      if (!items.length) {
+        listEl.innerHTML = '<div class="empty-hint pad">No saved projects yet.<br>Type a name below and click Save.</div>';
+        return;
+      }
+      items.forEach(p => {
+        const row = document.createElement("div");
+        row.className = "lib-item";
+        const info = document.createElement("div");
+        info.className = "lib-info";
+        const nm = document.createElement("div");
+        nm.className = "lib-name";
+        nm.textContent = p.name;
+        const dt = document.createElement("div");
+        dt.className = "lib-date dim";
+        dt.textContent = new Date(p.savedAt).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" });
+        info.append(nm, dt);
+        const acts = document.createElement("div");
+        acts.className = "lib-actions";
+
+        const loadBtn = document.createElement("button");
+        loadBtn.className = "btn ghost sm";
+        loadBtn.textContent = "Load";
+        loadBtn.addEventListener("click", async () => {
+          if (App.dirty && !confirm("Discard unsaved changes?")) return;
+          try {
+            const entry = await ProjectLibrary.load(p.id);
+            if (!entry) { toast("Not found"); return; }
+            loadProjectJSON(entry.data);
+            document.getElementById("project-name").value = App.project.name;
+            Viewport.fit(); Timeline.fit();
+            toast("Loaded: " + entry.name);
+            close();
+          } catch (e) { toast("Error: " + e.message); }
+        });
+
+        const overBtn = document.createElement("button");
+        overBtn.className = "btn ghost sm";
+        overBtn.title = "Overwrite with current project";
+        overBtn.textContent = "Overwrite";
+        overBtn.addEventListener("click", async () => {
+          if (!confirm(`Overwrite "${p.name}" with the current project?`)) return;
+          try {
+            await ProjectLibrary.save(p.name, p.id);
+            toast("Overwritten: " + p.name);
+            refresh();
+          } catch (e) { toast("Error: " + e.message); }
+        });
+
+        const delBtn = document.createElement("button");
+        delBtn.className = "btn ghost sm";
+        delBtn.style.color = "var(--danger)";
+        delBtn.textContent = "Delete";
+        delBtn.addEventListener("click", async () => {
+          if (!confirm(`Delete "${p.name}"?`)) return;
+          await ProjectLibrary.remove(p.id);
+          toast("Deleted");
+          refresh();
+        });
+
+        acts.append(loadBtn, overBtn, delBtn);
+        row.append(info, acts);
+        listEl.appendChild(row);
+      });
+    } catch (e) {
+      listEl.innerHTML = `<div class="empty-hint pad">Library unavailable: ${e.message}</div>`;
+    }
+  }
+
+  function open() {
+    nameInput.value = App.project.name;
+    overlay.hidden = false;
+    refresh();
+  }
+  function close() { overlay.hidden = true; }
+
+  function init() {
+    overlay = document.getElementById("library-overlay");
+    listEl = document.getElementById("library-list");
+    nameInput = document.getElementById("library-name-input");
+
+    document.getElementById("library-close").addEventListener("click", close);
+    overlay.addEventListener("pointerdown", e => { if (e.target === overlay) close(); });
+
+    document.getElementById("library-save-btn").addEventListener("click", async () => {
+      const name = nameInput.value.trim() || App.project.name;
+      try {
+        await ProjectLibrary.save(name);
+        toast("Saved to library: " + name);
+        refresh();
+      } catch (e) { toast("Could not save: " + e.message); }
+    });
+
+    document.getElementById("btn-library").addEventListener("click", open);
+  }
+
+  return { init, open, close };
+})();
 
 /* ── minimal ZIP writer (store method) ── */
 const Zip = (() => {
@@ -298,6 +543,77 @@ const Zip = (() => {
     return new Blob([...chunks, ...central, new Uint8Array(end.buffer)], { type: "application/zip" });
   }
   return { build };
+})();
+
+/* ── Lottie exporter (basic shapes/text/transforms) ── */
+const LottieExporter = (() => {
+  function animK(p, comp) {
+    const fps = comp.fps;
+    if (!p.anim || !p.keys.length) {
+      const v = p.value;
+      return { a: 0, k: Array.isArray(v) ? v : [v] };
+    }
+    const ks = p.keys.map((k, i) => {
+      const nxt = p.keys[i + 1];
+      const s = Array.isArray(k.v) ? k.v : [k.v];
+      const e = nxt ? (Array.isArray(nxt.v) ? nxt.v : [nxt.v]) : s;
+      return { t: Math.round(k.t * fps), s, e, i: { x: [0.4], y: [0] }, o: { x: [0.6], y: [1] }, h: k.ease === "hold" ? 1 : 0 };
+    });
+    return { a: 1, k: ks };
+  }
+
+  function exportComp(comp) {
+    const layers = comp.layers.filter(l => !["audio"].includes(l.type)).map((l, li) => {
+      const ks = {
+        p: animK(l.props.position, comp),
+        s: animK(l.props.scale, comp),
+        r: animK(l.props.rotation, comp),
+        o: animK(l.props.opacity, comp),
+        a: animK(l.props.anchor, comp),
+      };
+      const base = {
+        nm: l.name, ind: li + 1,
+        ip: Math.round(l.inPoint * comp.fps),
+        op: Math.round(l.outPoint * comp.fps),
+        st: 0, ks,
+      };
+      if (l.type === "solid") {
+        return { ...base, ty: 1, sc: l.data.color || "#5e6ad2", sw: l.data.w || 100, sh: l.data.h || 100 };
+      }
+      if (l.type === "nullobj") {
+        return { ...base, ty: 3 };
+      }
+      if (l.type === "text" && l.data) {
+        return { ...base, ty: 5 };
+      }
+      if (l.type === "comp") {
+        const ri = App.project.comps.findIndex(c => c.id === l.data.compId) + 1;
+        return { ...base, ty: 0, refId: "comp_" + l.data.compId, w: comp.width, h: comp.height };
+      }
+      return { ...base, ty: 4 };
+    });
+
+    const assets = App.project.comps.filter(c => c.id !== comp.id).map(c => ({
+      id: "comp_" + c.id, layers: [],
+    }));
+
+    return {
+      v: "5.7.4", nm: comp.name,
+      w: comp.width, h: comp.height,
+      ip: 0, op: Math.round(comp.duration * comp.fps),
+      fr: comp.fps,
+      assets, layers,
+    };
+  }
+
+  function exportCurrent() {
+    const json = JSON.stringify(exportComp(App.comp), null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    Exporter.download(blob, App.project.name.replace(/\s+/g, "-") + "-lottie.json");
+    toast("Lottie JSON exported");
+  }
+
+  return { exportCurrent };
 })();
 
 /* ── export ── */
@@ -377,6 +693,11 @@ const Exporter = (() => {
     close();
   }
 
+  async function exportGIF(opts) {
+    toast("GIF: exporting as PNG sequence (no native GIF encoder)");
+    return exportPNGSeq(opts);
+  }
+
   function exportWebM(opts) {
     if (typeof MediaRecorder === "undefined") {
       toast("MediaRecorder not supported in this browser");
@@ -388,7 +709,6 @@ const Exporter = (() => {
     const cctx = cv.getContext("2d");
     const stream = cv.captureStream(c.fps);
 
-    // mix audio layers into the recording
     let audioDest = null;
     const hasAudio = App.layers.some(l => l.type === "audio" && l.visible);
     if (hasAudio) {
@@ -428,7 +748,7 @@ const Exporter = (() => {
     const start = performance.now();
     recorder.start(200);
     const wasPlaying = App.playing;
-    App.playing = true; // make audio/video elements run during export
+    App.playing = true;
     AudioEngine.sync();
 
     (function frame() {
@@ -465,6 +785,7 @@ const Exporter = (() => {
     const opts = getOpts();
     if (opts.format === "png") exportPNG(opts);
     else if (opts.format === "pngseq") exportPNGSeq(opts);
+    else if (opts.format === "gif") exportGIF(opts);
     else exportWebM(opts);
   }
 
@@ -488,7 +809,7 @@ const Exporter = (() => {
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }
 
-  return { open, close, start, download, copyFrameToClipboard };
+  return { open, close, start, stop, download, copyFrameToClipboard };
 })();
 
 /* ── graph editor ── */
@@ -536,7 +857,6 @@ const GraphEditor = (() => {
     gctx.fillStyle = "#0f1011";
     gctx.fillRect(0, 0, W, H);
 
-    // grid
     gctx.strokeStyle = "#1b1d22";
     gctx.fillStyle = "#5e636e";
     gctx.font = "10px ui-monospace, monospace";
@@ -555,14 +875,12 @@ const GraphEditor = (() => {
     }
     gctx.stroke();
 
-    // playhead
     gctx.strokeStyle = "#7c89f0";
     gctx.beginPath();
     const px = xOf(App.time);
     gctx.moveTo(px, PAD.t); gctx.lineTo(px, H - PAD.b);
     gctx.stroke();
 
-    // curves per component
     const comps = Array.isArray(prop.keys[0].v) ? prop.keys[0].v.length : 1;
     const colors = ["#eb5757", "#4cb782", "#26b5ce"];
     for (let ci = 0; ci < comps; ci++) {
@@ -578,7 +896,6 @@ const GraphEditor = (() => {
         i === 0 ? gctx.moveTo(x, y) : gctx.lineTo(x, y);
       }
       gctx.stroke();
-      // dots
       prop.keys.forEach(k => {
         const val = Array.isArray(k.v) ? k.v[ci] : k.v;
         const x = xOf(k.t), y = yOf(val, lo, hi);
@@ -685,14 +1002,20 @@ const CompTabs = (() => {
       tab.addEventListener("contextmenu", e => {
         e.preventDefault();
         showMenu(e.clientX, e.clientY, [
-          { label: "Rename…", run: () => { const n = prompt("Composition name:", c.name); if (n) { App.commit(); c.name = n; render(); } } },
+          { label: "Rename…", run: () => { const n = prompt("Composition name:", c.name); if (n) { App.commit(); c.name = n; render(); App.emit("project"); } } },
           { label: "Duplicate comp", run: () => {
             App.commit();
             const copy = JSON.parse(JSON.stringify(c));
             copy.id = uid(); copy.name = c.name + " copy";
-            copy.layers.forEach(l => l.id = uid());
+            copy.layers.forEach(l => { l.id = uid(); });
             App.project.comps.push(copy);
             render();
+          } },
+          { label: "Comp settings…", run: () => {
+            const w = prompt("Width:", c.width); if (!w) return;
+            const h = prompt("Height:", c.height); if (!h) return;
+            App.commit(); c.width = parseInt(w) || c.width; c.height = parseInt(h) || c.height;
+            App.emit("project"); Viewport.fit();
           } },
           "-",
           { label: "Delete comp", danger: true, run: () => {
@@ -729,26 +1052,38 @@ const Palette = (() => {
   function actions() {
     const sel = App.selectedLayer();
     const c = App.comp;
+    const allEffects = Object.entries(EFFECTS).map(([k, v]) =>
+      sel && { title: `Add effect: ${v.label}`, run: () => { App.commit(); Layers.addEffect(sel, k); } }
+    ).filter(Boolean);
+
     return [
-      { title: "New text layer", run: () => { App.commit(); Layers.add(makeLayer("text")); } },
+      // layers
+      { title: "New text layer", hint: "T", run: () => { App.commit(); Layers.add(makeLayer("text")); } },
       { title: "New solid layer", run: () => { App.commit(); Layers.add(makeLayer("solid")); } },
       { title: "New shape layer", run: () => { App.commit(); Layers.add(makeLayer("shape")); } },
       { title: "New adjustment layer", run: () => { App.commit(); Layers.add(makeLayer("adjust")); } },
       { title: "New null object", run: () => { App.commit(); Layers.add(makeLayer("nullobj")); } },
       { title: "New composition", run: () => { App.commit(); const cc = Comps.create(); App.setActiveComp(cc.id); } },
       { title: "Import media…", run: () => document.getElementById("file-import").click() },
+      { title: "Import font…", run: () => document.getElementById("file-font").click() },
+
+      // playback
       { title: "Play / Pause", hint: "Space", run: () => Playback.toggle() },
-      { title: "Toggle loop playback", hint: "", run: () => { App.loop = !App.loop; toast(App.loop ? "Loop on" : "Loop off"); } },
+      { title: "Toggle loop playback", run: () => { App.loop = !App.loop; toast(App.loop ? "Loop on" : "Loop off"); document.getElementById("btn-loop").classList.toggle("active", App.loop); } },
       { title: "Go to start", hint: "Home", run: () => App.setTime(0) },
       { title: "Go to end", hint: "End", run: () => App.setTime(c.duration) },
+
+      // timeline
       { title: "Add marker at playhead", hint: "M", run: () => Timeline.addMarker() },
       { title: "Next marker", hint: "⇧.", run: () => UICommands.jumpMarker(1) },
       { title: "Previous marker", hint: "⇧,", run: () => UICommands.jumpMarker(-1) },
       { title: "Set work area start", hint: "B", run: () => { App.commit(); c.workStart = Math.min(snapT(App.time), c.workEnd - 0.1); Timeline.drawRuler(); } },
       { title: "Set work area end", hint: "N", run: () => { App.commit(); c.workEnd = Math.max(snapT(App.time), c.workStart + 0.1); Timeline.drawRuler(); } },
+
+      // selection ops
       sel && { title: `Duplicate "${sel.name}"`, hint: "⌘D", run: () => { App.commit(); Layers.duplicate(sel.id); } },
       sel && { title: `Split "${sel.name}" at playhead`, run: () => { App.commit(); Layers.split(sel.id, snapT(App.time)); } },
-      sel && { title: `Delete selected layer${App.selectedIds().length > 1 ? "s" : ""}`, hint: "⌫", run: () => { App.commit(); Layers.removeMany(App.selectedIds()); } },
+      sel && { title: `Delete selected`, hint: "⌫", run: () => { App.commit(); Layers.removeMany(App.selectedIds()); } },
       sel && { title: "Precompose selection", run: () => { App.commit(); Comps.precompose(); } },
       sel && { title: "Center layer in comp", run: () => { App.commit(); Layers.setProp(sel, "position", [c.width / 2, c.height / 2]); App.emit("project"); } },
       sel && { title: "Fit layer to comp", run: () => UICommands.fitLayerToComp(sel) },
@@ -764,20 +1099,50 @@ const Palette = (() => {
       { title: "Reverse selected keyframes", run: () => UICommands.reverseKeys() },
       { title: "Sequence layers (stagger)", run: () => UICommands.sequenceLayers() },
       { title: "Select all layers", hint: "⌘A", run: () => selectAll() },
+
+      // layer new features
+      sel && { title: "Start motion sketch", run: () => MotionSketch.start() },
+      sel && { title: "Enable time remap", run: () => { App.commit(); Layers.enableTimeRemap(sel); App.emit("project"); } },
+      sel && { title: "Disable time remap", run: () => { App.commit(); Layers.disableTimeRemap(sel); App.emit("project"); } },
+      sel && { title: "Toggle auto-orient to path", run: () => { App.commit(); sel.autoOrient = !sel.autoOrient; App.emit("project"); toast("Auto-orient: " + (sel.autoOrient ? "on" : "off")); } },
+      sel && { title: "Toggle hold frame", run: () => { App.commit(); sel.holdFrame = !sel.holdFrame; App.emit("project"); toast("Hold frame: " + (sel.holdFrame ? "on" : "off")); } },
+      sel && { title: "Toggle posterize time", run: () => { App.commit(); sel.posterizeTime = !sel.posterizeTime; App.emit("project"); toast("Posterize time: " + (sel.posterizeTime ? "on" : "off")); } },
+      sel && { title: "Toggle collapse transform", run: () => { App.commit(); sel.collapseTransform = !sel.collapseTransform; App.emit("project"); toast("Collapse transform: " + (sel.collapseTransform ? "on" : "off")); } },
+      sel && { title: "Add note to layer…", run: () => { const n = prompt("Layer note:", sel.notes || ""); if (n !== null) { App.commit(); sel.notes = n; App.emit("project"); } } },
+
+      // comp
       { title: "Toggle comp motion blur", run: () => { App.commit(); c.motionBlur = !c.motionBlur; App.emit("project"); } },
       { title: "Toggle transparent background", run: () => { App.commit(); c.bgAlpha = !c.bgAlpha; App.emit("project"); } },
+      { title: "Clear ruler guides", run: () => UICommands.deleteGuides() },
+      { title: "Toggle snap to grid", run: () => UICommands.snapToGrid() },
+
+      // view
       { title: "Fit viewport", hint: "F", run: () => Viewport.fit() },
       { title: "Fit timeline", run: () => Timeline.fit() },
       { title: "Toggle side panels", hint: "Tab", run: () => togglePanels() },
+
+      // undo
       { title: "Undo", hint: "⌘Z", run: () => History.undo() },
       { title: "Redo", hint: "⇧⌘Z", run: () => History.redo() },
+
+      // export
       { title: "Export…", run: () => Exporter.open() },
+      { title: "Export Lottie JSON", run: () => LottieExporter.exportCurrent() },
       { title: "Copy frame to clipboard", run: () => Exporter.copyFrameToClipboard() },
-      { title: "Save project", hint: "⌘S", run: saveProject },
+
+      // project / library
+      { title: "Save project (.lumen)", hint: "⌘S", run: saveProject },
       { title: "Open project…", hint: "⌘O", run: () => document.getElementById("file-open").click() },
       { title: "New project", run: () => newProject(true) },
+      { title: "Save to project library", run: () => LibraryModal.open() },
+      { title: "Load from project library", run: () => LibraryModal.open() },
       { title: "Load demo project", run: () => { newProject(false); buildDemo(); afterProjectLoad("Welcome to Lumen"); } },
+
+      // help
       { title: "Keyboard shortcuts", hint: "?", run: () => showShortcuts() },
+
+      // dynamic: add any effect to selected layer
+      ...allEffects,
     ].filter(Boolean);
   }
 
@@ -806,7 +1171,7 @@ const Palette = (() => {
       list.innerHTML = `<div class="palette-empty">No matching commands</div>`;
       return;
     }
-    filtered.forEach((it, i) => {
+    filtered.slice(0, 60).forEach((it, i) => {
       const el = document.createElement("div");
       el.className = "palette-item" + (i === active ? " active" : "");
       el.innerHTML = `<span class="pi-title">${escapeHtml(it.title)}</span>` +
@@ -904,6 +1269,23 @@ function togglePanels() {
 
 function showShortcuts() {
   document.getElementById("shortcuts-overlay").hidden = false;
+}
+
+/* ── font import ── */
+async function importFont(file) {
+  try {
+    const url = URL.createObjectURL(file);
+    const name = file.name.replace(/\.(ttf|otf|woff2?)$/i, "").replace(/[-_]/g, " ");
+    const face = new FontFace(name, `url(${url})`);
+    const loaded = await face.load();
+    document.fonts.add(loaded);
+    toast(`Font loaded: ${name}`);
+    App.project._fonts = App.project._fonts || [];
+    App.project._fonts.push({ name, url });
+    App.emit("project");
+  } catch (e) {
+    toast("Font load failed: " + e.message);
+  }
 }
 
 /* ── panel resizing ── */
@@ -1014,6 +1396,7 @@ function buildDemo() {
 
 /* ── boot ── */
 function initApp() {
+  App.snapToGrid = false;
   App.project = defaultProject();
   App.project.name = "Welcome to Lumen";
   buildDemo();
@@ -1024,6 +1407,7 @@ function initApp() {
   Palette.init();
   GraphEditor.init();
   CompTabs.init();
+  LibraryModal.init();
   initResizers();
 
   /* top bar */
@@ -1097,6 +1481,12 @@ function initApp() {
     reader.readAsText(file);
   });
 
+  document.getElementById("file-font").addEventListener("change", e => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (file) importFont(file);
+  });
+
   /* export modal */
   document.getElementById("export-close").addEventListener("click", () => Exporter.close());
   document.getElementById("export-cancel").addEventListener("click", () => Exporter.close());
@@ -1120,11 +1510,17 @@ function initApp() {
     document.title = (App.dirty ? "● " : "") + App.project.name + " — Lumen";
   });
 
-  /* autosave */
+  /* autosave every 25s + before unload */
   setInterval(autosave, 25000);
   window.addEventListener("beforeunload", autosave);
 
-  /* keyboard */
+  /* sketch label in hud */
+  setInterval(() => {
+    const el = document.getElementById("sketch-label");
+    if (el) el.hidden = !MotionSketch.isRecording();
+  }, 200);
+
+  /* keyboard shortcuts */
   window.addEventListener("keydown", e => {
     const tag = (e.target.tagName || "").toLowerCase();
     if (tag === "input" || tag === "textarea" || tag === "select") return;
@@ -1141,6 +1537,7 @@ function initApp() {
         case "c": e.preventDefault(); UIClipboard.copyLayers(); return;
         case "v": e.preventDefault(); UIClipboard.pasteLayers(); return;
         case "a": e.preventDefault(); selectAll(); return;
+        case "l": e.preventDefault(); LibraryModal.open(); return;
       }
       return;
     }
@@ -1156,8 +1553,14 @@ function initApp() {
         if (e.altKey) { UICommands.nudgeTime(e.shiftKey ? 10 : 1); }
         else Playback.step(e.shiftKey ? 10 : 1);
         return;
-      case "ArrowUp": e.preventDefault(); UICommands.nudge(0, e.shiftKey ? -10 : -1); return;
-      case "ArrowDown": e.preventDefault(); UICommands.nudge(0, e.shiftKey ? 10 : 1); return;
+      case "ArrowUp": e.preventDefault();
+        if (e.shiftKey && mod) UICommands.nudgeScale(10);
+        else UICommands.nudge(0, e.shiftKey ? -10 : -1);
+        return;
+      case "ArrowDown": e.preventDefault();
+        if (e.shiftKey && mod) UICommands.nudgeScale(-10);
+        else UICommands.nudge(0, e.shiftKey ? 10 : 1);
+        return;
       case "Home": e.preventDefault(); App.setTime(0); return;
       case "End": e.preventDefault(); App.setTime(App.comp.duration); return;
       case "Delete": case "Backspace": {
@@ -1166,10 +1569,12 @@ function initApp() {
         return;
       }
       case "Escape":
+        if (MotionSketch.isRecording()) { MotionSketch.stop(); return; }
         if (Palette.isOpen()) Palette.close();
         else if (GraphEditor.isOpen()) GraphEditor.close();
         else if (!document.getElementById("shortcuts-overlay").hidden) document.getElementById("shortcuts-overlay").hidden = true;
         else if (!document.getElementById("export-overlay").hidden) Exporter.close();
+        else if (!document.getElementById("library-overlay").hidden) LibraryModal.close();
         else { App.selectedKeys = []; App.select(null); }
         return;
       case "Tab": e.preventDefault(); togglePanels(); return;
@@ -1181,6 +1586,7 @@ function initApp() {
       case "b": { App.commit(); const c = App.comp; c.workStart = Math.min(snapT(App.time), c.workEnd - 0.1); Timeline.drawRuler(); return; }
       case "n": { App.commit(); const c = App.comp; c.workEnd = Math.max(snapT(App.time), c.workStart + 0.1); Timeline.drawRuler(); return; }
       case "f": Viewport.fit(); return;
+      case "g": Viewport.toggleGuides(); return;
       case "i": if (sel) App.setTime(sel.inPoint); return;
       case "o": if (sel) App.setTime(sel.outPoint); return;
       case "j": UICommands.jumpKey(-1); return;

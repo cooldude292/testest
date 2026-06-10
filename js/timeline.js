@@ -217,6 +217,7 @@ const Timeline = (() => {
     const rows = [{ kind: "layer", layer }];
     if (App.expanded.has(layer.id)) {
       PROP_ORDER.forEach(name => rows.push({ kind: "prop", layer, p: layer.props[name], label: PROP_LABELS[name] }));
+      if (layer.timeRemap) rows.push({ kind: "prop", layer, p: layer.timeRemap, label: "Time Remap" });
       layer.effects.forEach(fx => {
         const def = EFFECTS[fx.type];
         if (!def) return;
@@ -291,6 +292,22 @@ const Timeline = (() => {
       });
       input.addEventListener("blur", () => finish(true));
     });
+
+    // badges for special states
+    if (layer.notes) {
+      const nb = document.createElement("span");
+      nb.className = "notes-badge";
+      nb.title = layer.notes;
+      nb.textContent = "N";
+      row.appendChild(nb);
+    }
+    if (layer.timeRemap) {
+      const tb = document.createElement("span");
+      tb.className = "tremap-badge";
+      tb.title = "Time remap active";
+      tb.textContent = "TR";
+      row.appendChild(tb);
+    }
 
     row.append(caret, chip, name,
       makeToggle("solo", layer.solo, "Solo", () => { App.commit(); layer.solo = !layer.solo; App.emit("project"); }, true),
@@ -411,6 +428,15 @@ const Timeline = (() => {
     }, p.wiggle && p.wiggle.on ? "on" : "");
 
     const graphBtn = smallBtn(ICONS.graph, "Graph editor", () => GraphEditor.open(p, `${layer.name} · ${label}`));
+
+    // expression indicator
+    if (p.exprEnabled && p.expr) {
+      const eb = document.createElement("span");
+      eb.className = "tl-expr-badge";
+      eb.title = "Expression active";
+      eb.textContent = "ε";
+      row.appendChild(eb);
+    }
 
     const nav = document.createElement("span");
     nav.className = "keynav";

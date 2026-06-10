@@ -306,12 +306,107 @@ const Panels = (() => {
     return b;
   }
 
+  function exprEditor(p, layer) {
+    const wrap = document.createElement("div");
+    wrap.className = "expr-row";
+
+    const header = document.createElement("div");
+    header.style.cssText = "display:flex;align-items:center;gap:6px;margin-bottom:4px";
+
+    const enCheck = document.createElement("input");
+    enCheck.type = "checkbox";
+    enCheck.checked = !!p.exprEnabled;
+    enCheck.title = "Enable expression";
+    enCheck.addEventListener("change", () => {
+      App.commit();
+      p.exprEnabled = enCheck.checked;
+      App.emit("project");
+    });
+
+    const lbl = document.createElement("span");
+    lbl.style.cssText = "font-size:11px;color:var(--text-3);flex:1";
+    lbl.textContent = "ε Expression";
+
+    const presets = document.createElement("select");
+    presets.style.cssText = "font-size:10.5px;height:20px;width:auto;border-radius:3px";
+    presets.innerHTML = `<option value="">Presets…</option>
+      <option value="wiggle(2, 30)">wiggle(2,30)</option>
+      <option value="wiggle(5, 10)">wiggle(5,10)</option>
+      <option value="loopOut()">loopOut()</option>
+      <option value="loopOut('pingpong')">loopOut pingpong</option>
+      <option value="time * 60">time * 60°/s</option>
+      <option value="Math.sin(time * 3) * 50">sine wave</option>
+      <option value="Math.abs(Math.sin(time * Math.PI * 2)) * 100">bounce</option>
+      <option value="clamp(time / 2, 0, 100)">ramp in</option>`;
+    presets.addEventListener("change", () => {
+      if (presets.value) { ta.value = presets.value; presets.value = ""; }
+    });
+
+    header.append(enCheck, lbl, presets);
+
+    const ta = document.createElement("textarea");
+    ta.className = "expr-textarea";
+    ta.placeholder = "e.g. wiggle(2, 30)";
+    ta.value = p.expr || "";
+    ta.spellcheck = false;
+    ta.addEventListener("keydown", e => e.stopPropagation());
+    let exprTimer = null;
+    ta.addEventListener("input", () => {
+      clearTimeout(exprTimer);
+      exprTimer = setTimeout(() => {
+        App.commit();
+        p.expr = ta.value.trim() || null;
+        App.emit("project");
+      }, 400);
+    });
+
+    wrap.append(header, ta);
+
+    if (p._exprError) {
+      const errEl = document.createElement("div");
+      errEl.className = "expr-error";
+      errEl.textContent = "⚠ " + p._exprError;
+      wrap.appendChild(errEl);
+    }
+
+    return wrap;
+  }
+
   function propRow(layer, prop, fields) {
     const row = document.createElement("div");
     row.className = "prop-row";
     const label = document.createElement("span");
     label.className = "prop-label";
-    label.append(stopwatchBtnObj(layer.props[prop], layer.id));
+    const swWrap = document.createElement("span");
+    swWrap.className = "prop-sw-wrap";
+    swWrap.appendChild(stopwatchBtnObj(layer.props[prop], layer.id));
+    // expression toggle
+    const p = layer.props[prop];
+    const exprBtn = document.createElement("button");
+    exprBtn.className = "expr-toggle-btn" + (p.exprEnabled ? " on" : "");
+    exprBtn.title = "Expression editor";
+    exprBtn.textContent = "ε";
+    exprBtn.addEventListener("click", () => {
+      const existing = row.parentElement.querySelector(".expr-row[data-prop='" + prop + "']");
+      if (existing) { existing.remove(); return; }
+      const ed = exprEditor(p, layer);
+      ed.dataset.prop = prop;
+      row.after(ed);
+      refreshers.push({ refresh: () => {
+        const err = p._exprError;
+        const errEl = ed.querySelector(".expr-error");
+        if (err && !errEl) {
+          const e2 = document.createElement("div");
+          e2.className = "expr-error";
+          e2.textContent = "⚠ " + err;
+          ed.appendChild(e2);
+        } else if (!err && errEl) {
+          errEl.remove();
+        }
+      }});
+    });
+    swWrap.appendChild(exprBtn);
+    label.appendChild(swWrap);
     label.append(document.createTextNode(PROP_LABELS[prop]));
     const wrap = document.createElement("span");
     wrap.className = "prop-fields";
@@ -355,7 +450,12 @@ const Panels = (() => {
   function transformGroup(layer) {
     const g = document.createElement("div");
     g.className = "prop-group";
-    g.innerHTML = `<div class="prop-group-title">Transform</div>`;
+    const titleRow = document.createElement("div");
+    titleRow.className = "prop-group-title";
+    titleRow.textContent = "Transform";
+    const sketchBtn = motionSketchBtn(layer);
+    titleRow.appendChild(sketchBtn);
+    g.appendChild(titleRow);
     g.appendChild(propRow(layer, "position", vecScrubs(layer, "position", ["X", "Y"])));
     g.appendChild(propRow(layer, "scale", vecScrubs(layer, "scale", ["X", "Y"], { step: 0.5 })));
     g.appendChild(propRow(layer, "rotation", [scalarScrub(layer, "rotation", "°", { step: 0.5 })]));
@@ -437,14 +537,34 @@ const Panels = (() => {
       });
       ta.addEventListener("blur", () => { committed = false; });
       g.appendChild(dataRow("Content", ta));
-      g.appendChild(dataRow("Font", selectInput([
+
+      // build font list including any imported fonts
+      const builtinFonts = [
         ["Inter, system-ui, sans-serif", "Inter"],
         ["Georgia, serif", "Georgia"],
         ["'Times New Roman', serif", "Times"],
         ["Futura, 'Century Gothic', sans-serif", "Futura"],
         ["'SF Mono', Menlo, monospace", "Mono"],
         ["'Arial Black', sans-serif", "Arial Black"],
-      ], () => d.font, v => d.font = v)));
+      ];
+      const importedFonts = (App.project._fonts || []).map(f => [f.name, f.name + " (imported)"]);
+      const fontWrap = document.createElement("span");
+      fontWrap.className = "prop-fields";
+      fontWrap.style.gap = "5px";
+      const fontSel = document.createElement("select");
+      [...builtinFonts, ...importedFonts].forEach(([v, lab]) => {
+        const o = document.createElement("option");
+        o.value = v; o.textContent = lab; fontSel.appendChild(o);
+      });
+      fontSel.value = d.font || "Inter, system-ui, sans-serif";
+      fontSel.addEventListener("change", () => { App.commit(); d.font = fontSel.value; App.emit("project"); });
+      const importBtn = document.createElement("button");
+      importBtn.className = "btn ghost sm";
+      importBtn.title = "Import font (.ttf/.otf)";
+      importBtn.textContent = "+ Font";
+      importBtn.addEventListener("click", () => document.getElementById("file-font").click());
+      fontWrap.append(fontSel, importBtn);
+      g.appendChild(dataRow("Font", fontWrap));
       g.appendChild(pairRow("Size",
         numInput(() => d.size, v => d.size = v, { label: "px", min: 4, max: 1200 }),
         selectInput([["300", "Light"], ["400", "Regular"], ["500", "Medium"], ["600", "Semibold"], ["700", "Bold"], ["900", "Black"]],
@@ -487,6 +607,38 @@ const Panels = (() => {
         g.appendChild(dataRow("Points", numInput(() => d.points || 5, v => d.points = Math.round(v), { min: 3, max: 30 })));
       if (d.shape === "star")
         g.appendChild(dataRow("Inset", numInput(() => d.inset || 0.5, v => d.inset = v, { min: 0.05, max: 0.95, step: 0.01, decimals: 2 })));
+
+      // trim paths
+      const trimHead = document.createElement("div");
+      trimHead.className = "prop-group-title";
+      trimHead.style.marginTop = "8px";
+      trimHead.append(document.createTextNode("Trim Paths"));
+      const trimEnCheck = checkbox("Enable", () => d.trimEnabled, v => d.trimEnabled = v);
+      trimHead.appendChild(trimEnCheck);
+      g.appendChild(trimHead);
+      if (d.trimEnabled !== false) {
+        g.appendChild(pairRow("Trim",
+          numInput(() => d.trimStart ?? 0, v => d.trimStart = clamp(v, 0, 100), { label: "Start%", min: 0, max: 100 }),
+          numInput(() => d.trimEnd ?? 100, v => d.trimEnd = clamp(v, 0, 100), { label: "End%", min: 0, max: 100 })));
+        g.appendChild(dataRow("Offset", numInput(() => d.trimOffset ?? 0, v => d.trimOffset = v % 360, { label: "°" })));
+      }
+
+      // shape repeater
+      const repHead = document.createElement("div");
+      repHead.className = "prop-group-title";
+      repHead.style.marginTop = "8px";
+      repHead.textContent = "Repeater";
+      g.appendChild(repHead);
+      g.appendChild(dataRow("Count", numInput(() => d.repeatCount ?? 1, v => d.repeatCount = clamp(Math.round(v), 1, 99), { min: 1, max: 99 })));
+      if ((d.repeatCount ?? 1) > 1) {
+        g.appendChild(pairRow("Offset",
+          numInput(() => d.repeatOffsetX ?? 0, v => d.repeatOffsetX = v, { label: "X" }),
+          numInput(() => d.repeatOffsetY ?? 0, v => d.repeatOffsetY = v, { label: "Y" })));
+        g.appendChild(pairRow("Rot/Scale",
+          numInput(() => d.repeatRotation ?? 0, v => d.repeatRotation = v, { label: "°" }),
+          numInput(() => d.repeatScale ?? 100, v => d.repeatScale = v, { label: "%" })));
+        g.appendChild(dataRow("Opacity", numInput(() => d.repeatOpacity ?? 100, v => d.repeatOpacity = clamp(v, 0, 100), { label: "%", min: 0, max: 100 })));
+      }
     }
 
     if (layer.type === "image" || layer.type === "video" || layer.type === "audio") {
@@ -544,6 +696,52 @@ const Panels = (() => {
     if (layer.type !== "audio") {
       g.appendChild(dataRow("Motion blur", checkbox("Enable", () => layer.motionBlur, v => layer.motionBlur = v)));
     }
+
+    // v3: auto-orient, hold frame, posterize time, collapse transform
+    if (layer.props.position) {
+      g.appendChild(dataRow("Path", checkbox("Auto-orient to path", () => layer.autoOrient, v => layer.autoOrient = v)));
+    }
+    g.appendChild(dataRow("Hold", checkbox("Hold frame at in-point", () => layer.holdFrame, v => layer.holdFrame = v)));
+
+    const posterWrap = document.createElement("div");
+    posterWrap.className = "prop-row";
+    const posterCheck = checkbox("Posterize time", () => layer.posterizeTime, v => layer.posterizeTime = v);
+    const posterFps = numInput(() => layer.posterizeTimeFPS ?? 12, v => layer.posterizeTimeFPS = clamp(Math.round(v), 1, 120), { label: "fps", min: 1, max: 120 });
+    posterFps.style.width = "70px";
+    posterWrap.append(posterCheck, posterFps);
+    g.appendChild(posterWrap);
+
+    if (layer.type === "comp") {
+      g.appendChild(dataRow("Collapse", checkbox("Collapse transform", () => layer.collapseTransform, v => layer.collapseTransform = v)));
+    }
+
+    // v3: time remap
+    if (layer.type !== "nullobj" && layer.type !== "adjust") {
+      const trRow = document.createElement("div");
+      trRow.className = "prop-row tremap-row";
+      const trBtn = document.createElement("button");
+      trBtn.className = "btn ghost sm";
+      trBtn.textContent = layer.timeRemap ? "Disable Time Remap" : "Enable Time Remap";
+      trBtn.addEventListener("click", () => {
+        App.commit();
+        if (layer.timeRemap) Layers.disableTimeRemap(layer);
+        else Layers.enableTimeRemap(layer);
+        App.emit("project");
+      });
+      trRow.appendChild(trBtn);
+      g.appendChild(trRow);
+    }
+
+    // v3: notes
+    const notesArea = document.createElement("textarea");
+    notesArea.className = "notes-textarea";
+    notesArea.placeholder = "Layer notes…";
+    notesArea.value = layer.notes || "";
+    notesArea.addEventListener("keydown", e => e.stopPropagation());
+    notesArea.addEventListener("input", () => { layer.notes = notesArea.value; });
+    notesArea.addEventListener("blur", () => { App.emit("project"); });
+    g.appendChild(dataRow("Notes", notesArea));
+
     return g;
   }
 
@@ -713,6 +911,16 @@ const Panels = (() => {
   function renderProject() {
     renderCompSettings();
     renderAssets();
+  }
+
+  function motionSketchBtn(layer) {
+    const b = document.createElement("button");
+    b.className = "btn ghost sm";
+    b.title = "Record mouse movement as position keyframes";
+    b.textContent = "⬤ Sketch";
+    b.style.color = "var(--danger)";
+    b.addEventListener("click", () => MotionSketch.start());
+    return b;
   }
 
   function init() {

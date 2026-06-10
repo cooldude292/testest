@@ -7,12 +7,14 @@ const Viewport = (() => {
   let compCtx = compCanvas.getContext("2d");
   let view = { scale: 1, ox: 0, oy: 0, fitted: true };
   let dirty = true;
-  let quality = 1;            // preview resolution scale
-  let showGrid = false, showSafe = false, showChecker = false;
+  let quality = 1;
+  let showGrid = false, showSafe = false, showChecker = false, showGuides = true;
   let activeGuides = [];      // snap guide lines while dragging
   let fpsTime = 0, fpsCount = 0, fpsValue = 0;
+  let marquee = null;         // { x0, y0, x1, y1 } in screen coords
   const HANDLE = 7;
   const SNAP_TOL = 6;
+  const RULER_W = 20;         // guide ruler drag zone in px
 
   function requestDraw() { dirty = true; }
 
@@ -100,9 +102,11 @@ const Viewport = (() => {
 
     if (showGrid) drawGrid(vx, vy, vw, vh);
     if (showSafe) drawSafe(vx, vy, vw, vh);
+    if (showGuides) drawRulerGuides();
     drawMotionPath();
     drawGizmo();
     drawSnapGuides();
+    drawMarquee();
     updateFps();
   }
 
@@ -139,6 +143,43 @@ const Viewport = (() => {
       ctx.moveTo(vx, vy + vh * f); ctx.lineTo(vx + vw, vy + vh * f);
     });
     ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawRulerGuides() {
+    const guides = (App.comp && App.comp.guides) || [];
+    if (!guides.length) return;
+    ctx.save();
+    ctx.strokeStyle = "rgba(0,200,255,0.5)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    guides.forEach(g => {
+      if (g.axis === "v") {
+        const [sx] = compToScreen(g.v, 0);
+        ctx.moveTo(sx, 0); ctx.lineTo(sx, canvas.clientHeight);
+      } else {
+        const [, sy] = compToScreen(0, g.v);
+        ctx.moveTo(0, sy); ctx.lineTo(canvas.clientWidth, sy);
+      }
+    });
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawMarquee() {
+    if (!marquee) return;
+    const { x0, y0, x1, y1 } = marquee;
+    const x = Math.min(x0, x1), y = Math.min(y0, y1);
+    const w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+    ctx.save();
+    ctx.strokeStyle = "rgba(124,137,240,0.9)";
+    ctx.fillStyle = "rgba(124,137,240,0.07)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.fill(); ctx.stroke();
     ctx.restore();
   }
 
@@ -291,6 +332,22 @@ const Viewport = (() => {
     const rect = canvas.getBoundingClientRect();
     const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
 
+    // check for guide creation from rulers (near top/left edge)
+    if (sx < RULER_W) { dragCreateGuide(e, "v"); return; }
+    if (sy < RULER_W) { dragCreateGuide(e, "h"); return; }
+
+    // check for guide hit (within snap tolerance)
+    if (showGuides) {
+      const gh = guideHit(sx, sy);
+      if (gh) { dragGuide(e, gh); return; }
+    }
+
+    if (MotionSketch.isRecording()) {
+      const [wx, wy] = screenToComp(sx, sy);
+      MotionSketch.recordPos(wx, wy);
+      return;
+    }
+
     const mk = motionKeyHit(sx, sy);
     if (mk) return dragMotionKey(e, mk);
 
@@ -308,8 +365,100 @@ const Viewport = (() => {
       if (e.ctrlKey) dragAnchor(e, hit);
       else dragMove(e, hit);
     } else {
-      App.select(null);
+      // start marquee selection
+      if (!e.shiftKey && !e.metaKey) App.select(null);
+      dragMarquee(e, sx, sy);
     }
+  }
+
+  function guideHit(sx, sy) {
+    const guides = (App.comp && App.comp.guides) || [];
+    const tol = 5;
+    for (const g of guides) {
+      if (g.axis === "v") {
+        const [gx] = compToScreen(g.v, 0);
+        if (Math.abs(sx - gx) < tol) return g;
+      } else {
+        const [, gy] = compToScreen(0, g.v);
+        if (Math.abs(sy - gy) < tol) return g;
+      }
+    }
+    return null;
+  }
+
+  function dragCreateGuide(e, axis) {
+    if (!App.comp.guides) App.comp.guides = [];
+    const guide = { id: uid(), axis, v: 0 };
+    App.commit();
+    App.comp.guides.push(guide);
+    const rect = canvas.getBoundingClientRect();
+    startDrag(e, {
+      cursor: axis === "v" ? "ew-resize" : "ns-resize",
+      move(ev) {
+        const sx = ev.clientX - rect.left, sy = ev.clientY - rect.top;
+        if (axis === "v") { const [wx] = screenToComp(sx, 0); guide.v = Math.round(wx); }
+        else { const [, wy] = screenToComp(0, sy); guide.v = Math.round(wy); }
+        requestDraw();
+      },
+      up() { App.emit("project"); },
+    });
+  }
+
+  function dragGuide(e, guide) {
+    App.commit();
+    const rect = canvas.getBoundingClientRect();
+    startDrag(e, {
+      cursor: guide.axis === "v" ? "ew-resize" : "ns-resize",
+      move(ev) {
+        const sx = ev.clientX - rect.left, sy = ev.clientY - rect.top;
+        if (guide.axis === "v") { const [wx] = screenToComp(sx, 0); guide.v = Math.round(wx); }
+        else { const [, wy] = screenToComp(0, sy); guide.v = Math.round(wy); }
+        requestDraw();
+      },
+      up(ev, dx, dy) {
+        // if dragged off screen, remove guide
+        const totalDist = Math.hypot(dx, dy);
+        if (totalDist < 5) {
+          App.comp.guides = App.comp.guides.filter(g => g !== guide);
+        }
+        App.emit("project");
+      },
+    });
+  }
+
+  function dragMarquee(e, sx0, sy0) {
+    const rect = canvas.getBoundingClientRect();
+    marquee = { x0: sx0, y0: sy0, x1: sx0, y1: sy0 };
+    startDrag(e, {
+      move(ev) {
+        marquee.x1 = ev.clientX - rect.left;
+        marquee.y1 = ev.clientY - rect.top;
+        requestDraw();
+      },
+      up() {
+        if (marquee) {
+          // select all layers whose positions fall in the marquee
+          const x0 = Math.min(marquee.x0, marquee.x1);
+          const y0 = Math.min(marquee.y0, marquee.y1);
+          const x1 = Math.max(marquee.x0, marquee.x1);
+          const y1 = Math.max(marquee.y0, marquee.y1);
+          if (x1 - x0 > 5 || y1 - y0 > 5) {
+            const hits = App.layers.filter(l => {
+              if (!Renderer.isActive(l, App.time, true)) return false;
+              const [lx, ly] = compToScreen(...evalProp(l.props.position, App.time));
+              return lx >= x0 && lx <= x1 && ly >= y0 && ly <= y1;
+            });
+            if (hits.length) {
+              App.selection = hits[0].id;
+              App.selExtra = new Set(hits.slice(1).map(l => l.id));
+              App.emit("selection");
+            }
+          }
+        }
+        marquee = null;
+        requestDraw();
+      },
+    });
   }
 
   function dragMotionKey(e, { layer, p, key }) {
@@ -518,6 +667,14 @@ const Viewport = (() => {
       ]);
     });
 
+    canvas.addEventListener("pointermove", ev => {
+      if (MotionSketch.isRecording()) {
+        const r = canvas.getBoundingClientRect();
+        const [wx, wy] = screenToComp(ev.clientX - r.left, ev.clientY - r.top);
+        MotionSketch.recordPos(wx, wy);
+      }
+    });
+
     document.getElementById("btn-grid").addEventListener("click", e => {
       showGrid = !showGrid;
       e.currentTarget.classList.toggle("active", showGrid);
@@ -531,6 +688,11 @@ const Viewport = (() => {
     document.getElementById("btn-checker").addEventListener("click", e => {
       showChecker = !showChecker;
       e.currentTarget.classList.toggle("active", showChecker);
+      requestDraw();
+    });
+    document.getElementById("btn-guides").addEventListener("click", e => {
+      showGuides = !showGuides;
+      e.currentTarget.classList.toggle("active", showGuides);
       requestDraw();
     });
     document.getElementById("quality-select").addEventListener("change", e => {
@@ -561,5 +723,15 @@ const Viewport = (() => {
     fit();
   }
 
-  return { init, requestDraw, fit, setZoom, setQuality, screenToComp, compToScreen };
+  function toggleGuides() {
+    showGuides = !showGuides;
+    const btn = document.getElementById("btn-guides");
+    if (btn) btn.classList.toggle("active", showGuides);
+    requestDraw();
+    toast("Guides: " + (showGuides ? "on" : "off"));
+  }
+
+  function currentScale() { return view.scale; }
+
+  return { init, requestDraw, fit, setZoom, setQuality, screenToComp, compToScreen, toggleGuides, currentScale };
 })();
