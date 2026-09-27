@@ -18,16 +18,21 @@
   <body>
     <header class="topbar">
       <div class="brand"><span class="logo"></span>FlowTunnel</div>
+      <div class="seg modes" id="seg-mode">
+        <button data-v="3d">3D wind tunnel</button>
+        <button data-v="2d">2D slice</button>
+        <button data-v="wifi">WiFi</button>
+      </div>
       <div class="top-actions">
         <button id="btn-play" class="btn primary" title="Pause / resume (Space)">Pause</button>
         <button id="btn-reset" class="btn" title="Restart the flow (R)">Reset flow</button>
-        <button id="btn-export" class="btn" title="Save results as CSV">Export CSV</button>
+        <button id="btn-export" class="btn only-flow" title="Save results as CSV">Export CSV</button>
       </div>
       <div class="status"><span id="st-engine"></span><span id="st-fps"></span><span id="st-steps"></span></div>
     </header>
 
     <aside class="panel left">
-      <section>
+      <section class="only-flow">
         <h3>Body</h3>
         <label>Model
           <select id="in-shape"></select>
@@ -48,7 +53,7 @@
         </div>
       </section>
 
-      <section>
+      <section class="only-flow">
         <h3>Fluid</h3>
         <div class="seg" id="seg-medium">
           <button data-v="air">Air</button>
@@ -66,7 +71,7 @@
         <p class="hint">Wind speed in air, current speed in water. Same thing as the body moving through still fluid.</p>
       </section>
 
-      <section>
+      <section class="only-flow">
         <h3>Orientation</h3>
         <label class="slider">Pitch / angle of attack <output id="out-pitch"></output>
           <input id="in-pitch" type="range" min="-60" max="60" step="0.5" value="0" />
@@ -80,7 +85,31 @@
         <button id="btn-flip" class="btn wide">Flip nose direction</button>
       </section>
 
-      <section>
+      <section class="only-3d">
+        <h3>3D display</h3>
+        <label class="check"><input id="in-lines" type="checkbox" checked /> Streamlines</label>
+        <div class="seg" id="seg-rake">
+          <button data-v="grid">Full volume</button>
+          <button data-v="plane">Centre plane</button>
+        </div>
+        <label class="slider">Line density <output id="out-density"></output>
+          <input id="in-density" type="range" min="4" max="40" step="1" />
+        </label>
+        <label class="slider">Pulse speed <output id="out-pulse"></output>
+          <input id="in-pulse" type="range" min="0" max="3" step="0.05" />
+        </label>
+        <label class="check"><input id="in-pressure" type="checkbox" /> Pressure on surface</label>
+        <label class="check"><input id="in-ground" type="checkbox" /> Ground / rolling road</label>
+        <label>Flow slice
+          <select id="in-slice3">
+            <option value="off">Off</option>
+            <option value="side">Side (vertical)</option>
+            <option value="floor">Floor (horizontal)</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="only-2d">
         <h3>Slice</h3>
         <div class="seg" id="seg-view">
           <button data-v="side">Side view</button>
@@ -95,9 +124,17 @@
         </label>
       </section>
 
-      <section>
+      <section class="only-flow">
         <h3>Simulation</h3>
-        <label>Resolution
+        <label class="only-3d">Grid
+          <select id="in-res3">
+            <option value="0">Low (96 × 40 × 48)</option>
+            <option value="1">Medium (128 × 56 × 64)</option>
+            <option value="2">High (176 × 72 × 88)</option>
+            <option value="3">Ultra (224 × 96 × 112)</option>
+          </select>
+        </label>
+        <label class="only-2d">Resolution
           <select id="in-res">
             <option value="0">Low (320 × 160)</option>
             <option value="1">Medium (480 × 240)</option>
@@ -105,17 +142,61 @@
             <option value="3">Ultra (960 × 480)</option>
           </select>
         </label>
-        <label class="slider">Steps per frame <output id="out-spf"></output>
+        <label class="slider only-3d">Steps per frame <output id="out-spf3"></output>
+          <input id="in-spf3" type="range" min="1" max="30" step="1" />
+        </label>
+        <label class="slider only-2d">Steps per frame <output id="out-spf"></output>
           <input id="in-spf" type="range" min="1" max="60" step="1" />
         </label>
         <label class="slider">Turbulence model (Smagorinsky C) <output id="out-cs"></output>
           <input id="in-cs" type="range" min="0.08" max="0.3" step="0.01" />
         </label>
       </section>
+
+      <section class="only-wifi">
+        <h3>Radio</h3>
+        <div class="seg" id="seg-band">
+          <button data-v="2.4">2.4 GHz</button>
+          <button data-v="5">5 GHz</button>
+        </div>
+        <div class="seg" id="seg-wview">
+          <button data-v="signal">Signal strength</button>
+          <button data-v="waves">Live waves</button>
+        </div>
+        <label>Detail
+          <select id="in-ppw">
+            <option value="7">Fast</option>
+            <option value="9">Normal</option>
+            <option value="12">Fine</option>
+          </select>
+        </label>
+        <label class="slider">Sim speed <output id="out-wspf"></output>
+          <input id="in-wspf" type="range" min="2" max="80" step="1" />
+        </label>
+      </section>
+      <section class="only-wifi">
+        <h3>Floor plan</h3>
+        <div class="seg" id="seg-tool">
+          <button data-v="router">Move router</button>
+          <button data-v="wall">Draw wall</button>
+          <button data-v="erase">Erase</button>
+        </div>
+        <label>Wall material
+          <select id="in-mat"></select>
+        </label>
+        <div class="row2">
+          <button id="btn-addrouter" class="btn">Add router</button>
+          <button id="btn-delrouter" class="btn">Remove router</button>
+          <button id="btn-undo" class="btn">Undo</button>
+          <button id="btn-clearwalls" class="btn">Clear walls</button>
+        </div>
+        <button id="btn-layout" class="btn wide">Reset to sample apartment</button>
+        <p class="hint">Drag routers around. Draw walls by dragging; hold Shift to snap straight. Plan is 12 × 8 m.</p>
+      </section>
     </aside>
 
     <main class="stage">
-      <div class="flow-wrap card">
+      <div class="flow-wrap card" id="card-flow">
         <div class="card-head">
           <div class="seg small" id="seg-field">
             <button data-v="speed">Speed</button>
@@ -133,39 +214,59 @@
           <div class="flow-dir">flow →</div>
         </div>
       </div>
-      <div class="bottom">
-        <div class="card view3d-wrap">
-          <div class="card-head"><span>3D model + live slice</span><span class="hint">drag to orbit, scroll to zoom</span></div>
-          <div id="view3d"></div>
+      <div class="card view3d-wrap" id="card-3d">
+          <div class="card-head"><span id="v3-title">3D model + live slice</span><span class="hint">drag to orbit, right-drag to pan, scroll to zoom</span></div>
+          <div id="view3d"><div class="legend" id="legend3"></div></div>
         </div>
-        <div class="card chart-wrap">
+        <div class="card chart-wrap" id="card-chart">
           <div class="card-head"><span>Force coefficients over time</span>
             <span class="keys"><i class="k-cd"></i>C<sub>d</sub> <i class="k-cl"></i><span id="cl-key">C<sub>l</sub></span></span>
           </div>
           <canvas id="chart"></canvas>
         </div>
+      <div class="card" id="card-wifi">
+        <div class="card-head"><span id="wifi-title">WiFi coverage</span><span class="probe" id="wprobe"></span></div>
+        <div class="flow-canvas-wrap">
+          <canvas id="wifi-gl"></canvas>
+          <canvas id="wifi-ui"></canvas>
+          <div class="legend" id="wlegend"></div>
+        </div>
       </div>
     </main>
 
     <aside class="panel right">
-      <section>
+      <section class="only-wifi">
+        <h3>Coverage</h3>
+        <div class="metrics" id="m-wifi"></div>
+      </section>
+      <section class="only-wifi">
+        <h3>Setup</h3>
+        <div class="metrics" id="m-wifi2"></div>
+      </section>
+      <section class="note only-wifi">
+        <p>Solves Maxwell's equations (FDTD) on the floor plan at the real WiFi frequency, so reflections, wall shadows and interference are real. Walls use ITU-R P.2040 material data. It's a 2D slice of the floor with the 3D distance falloff folded back in; dBm assumes a typical router (about -40 dBm at 1 m). Great for finding dead zones and where to put the router.</p>
+      </section>
+      <section class="only-flow">
         <h3>Forces</h3>
         <div class="metrics" id="m-forces"></div>
       </section>
-      <section>
+      <section class="only-flow">
         <h3>Flow</h3>
         <div class="metrics" id="m-flow"></div>
       </section>
-      <section>
+      <section class="only-flow">
         <h3>Buoyancy</h3>
         <div class="verdict" id="verdict"></div>
         <div class="metrics" id="m-buoy"></div>
       </section>
-      <section>
+      <section class="only-flow">
         <h3>Body</h3>
         <div class="metrics" id="m-body"></div>
       </section>
-      <section class="note">
+      <section class="note only-3d">
+        <p>Full 3D lattice Boltzmann solve (D3Q19 + LES turbulence model) on your GPU. Forces come straight from the flow hitting the voxelised body. Streamline pulses travel at the local flow speed. The grid is coarse next to a real CFD mesh and the lattice can't reach real-world Reynolds numbers, so treat numbers as good estimates for comparing shapes, not certification data.</p>
+      </section>
+      <section class="note only-2d">
         <p>The flow is solved live on a 2D slice through the body with a lattice Boltzmann solver + LES turbulence model. 3D forces are estimated by applying the slice's coefficients to the body's real frontal and planform areas. Good for comparing shapes, angles and fluids. Not a substitute for a real CFD run or a real tunnel.</p>
       </section>
     </aside>

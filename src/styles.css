@@ -84,6 +84,7 @@ input[type="number"], input[type="text"], select {
 }
 input:focus, select:focus { border-color: var(--accent); }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.row2 .btn { padding: 6px 4px; }
 .slider output { float: right; color: var(--text); font-variant-numeric: tabular-nums; }
 input[type="range"] { width: 100%; accent-color: var(--accent); margin: 6px 0 0; }
 .hint { color: var(--muted); font-size: 11px; margin: 6px 0; }
@@ -121,12 +122,40 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 6px 0 0;
 .stage {
   grid-area: stage;
   display: grid;
-  grid-template-rows: minmax(0, 1.35fr) minmax(0, 1fr);
   gap: 10px;
   padding: 10px;
   min-width: 0;
   min-height: 0;
 }
+#card-flow { grid-area: flow; }
+#card-3d { grid-area: v3d; }
+#card-chart { grid-area: chart; }
+#card-wifi { grid-area: wifi; }
+body[data-mode="3d"] .stage {
+  grid-template-areas: "v3d v3d" "chart chart";
+  grid-template-rows: minmax(0, 1fr) 190px;
+}
+body[data-mode="2d"] .stage {
+  grid-template-areas: "flow flow" "v3d chart";
+  grid-template-rows: minmax(0, 1.35fr) minmax(0, 1fr);
+  grid-template-columns: 1fr 1fr;
+}
+body[data-mode="wifi"] .stage { grid-template-areas: "wifi"; grid-template-rows: minmax(0, 1fr); }
+body[data-mode="3d"] #card-flow,
+body:not([data-mode="wifi"]) #card-wifi,
+body[data-mode="wifi"] #card-flow,
+body[data-mode="wifi"] #card-3d,
+body[data-mode="wifi"] #card-chart { display: none; }
+body[data-mode="wifi"] .only-flow,
+body:not([data-mode="wifi"]) .only-wifi,
+body:not([data-mode="3d"]) .only-3d,
+body:not([data-mode="2d"]) .only-2d { display: none !important; }
+.modes { margin: 0 0 0 18px; }
+.modes button { padding: 5px 14px; }
+#wifi-gl, #wifi-ui { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#wifi-ui { cursor: crosshair; }
+#view3d .legend { z-index: 2; }
+.legend .bar.steps { display: flex; height: 10px; }
 .card {
   background: var(--card);
   border: 1px solid var(--line);
@@ -149,6 +178,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 6px 0 0;
 }
 .flow-wrap .card-head { justify-content: flex-start; }
 .check { display: flex; align-items: center; gap: 5px; margin: 0; }
+.panel .check { margin: 8px 0; color: var(--text); }
 .probe { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text); }
 
 .flow-canvas-wrap { position: relative; flex: 1; min-height: 0; }
@@ -167,7 +197,6 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 6px 0 0;
 .legend .ends { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
 .flow-dir { position: absolute; right: 12px; top: 8px; color: var(--muted); font-size: 11px; pointer-events: none; }
 
-.bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; min-height: 0; }
 #view3d { flex: 1; min-height: 0; position: relative; }
 #view3d canvas { display: block; position: absolute; inset: 0; }
 #chart { flex: 1; min-height: 0; width: 100%; display: block; }

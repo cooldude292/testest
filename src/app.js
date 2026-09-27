@@ -8,6 +8,8 @@ import { LBM } from './solver.js';
 import { GpuLBM } from './solver-gpu.js';
 import * as G from './geometry.js';
 import { SHAPES } from './shapes.js';
+import { Tunnel3D, GRIDS } from './tunnel3d.js';
+import { WifiSim, MATERIALS, defaultLayout } from './wifi.js';
 
 const $ = (id) => document.getElementById(id);
 const GRAV = 9.81;
@@ -18,7 +20,7 @@ const RES = [
   [960, 480],
 ];
 const MEDIA = {
-  air: { rho: 1.204, nu: 1.516e-5, max: 80, speed: 10 },
+  air: { rho: 1.204, nu: 1.516e-5, max: 120, speed: 10 },
   fresh: { rho: 998.2, nu: 1.004e-6, max: 8, speed: 1 },
   sea: { rho: 1025, nu: 1.05e-6, max: 8, speed: 1 },
 };
@@ -54,6 +56,20 @@ const state = {
   tracers: true,
   arrows: false,
   running: true,
+  mode: '3d',
+  res3: 1,
+  spf3: 6,
+  lines: true,
+  rake: 'grid',
+  density: 14,
+  pulse: 1,
+  pressure: false,
+  slice3: 'off',
+  ground: false,
+  band: '2.4',
+  wview: 'signal',
+  tool: 'router',
+  wspf: 24,
 };
 
 // Geometry-derived numbers for the current orientation.
@@ -73,7 +89,7 @@ const body = {
 
 let solver = null;
 let useGpu = true;
-const hist = { cd: [], cl: [], step: [] };
+const hist = { cd: [], cl: [], cs: [], step: [] };
 const HIST_MAX = 900;
 let crossings = [];
 let lastClSign = 0;
@@ -122,6 +138,20 @@ function updatePhysics() {
   // at the lowest stable viscosity and let the LES model do the rest.
   const nuLat = re > 0 ? (0.1 * body.chord) / re : 0.05;
   solver.setViscosity(nuLat);
+  const s3 = tunnel && tunnel.solver;
+  if (s3) {
+    s3.u0 = u0;
+    s3.cs = state.cs;
+    s3.setViscosity(re > 0 ? (0.1 * tunnel.scale) / re : 0.05);
+  }
+}
+
+// The solver behind the current flow mode.
+function active() {
+  return state.mode === '3d' && tunnel && tunnel.solver ? tunnel.solver : solver;
+}
+function chordCells() {
+  return state.mode === '3d' && tunnel && tunnel.solver ? tunnel.scale : body.chord;
 }
 
 function realRe() {
@@ -129,7 +159,7 @@ function realRe() {
 }
 
 function simRe() {
-  return (0.1 * body.chord) / solver.nu;
+  return (0.1 * chordCells()) / active().nu;
 }
 
 // ------------------------------------------------------------------ body --
@@ -167,7 +197,16 @@ function loadShape(key) {
   $('in-length').value = s.length;
   $('in-mass').value = s.mass;
   state.rawSoup = null;
+  state.ground = !!s.ground;
+  $('in-ground').checked = state.ground;
+  if (tunnel) tunnel.ground = state.ground;
+  if (s.medium && s.medium !== state.medium) setMedium(s.medium);
+  if (s.speed) {
+    state.speed = Math.min(s.speed, state.speedMax);
+    syncSpeed();
+  }
   setModel(soup, s.label, colors);
+  frameCamera();
 }
 
 function orientImported() {
@@ -199,6 +238,13 @@ function rebuildBody() {
   const { nx, ny } = solver;
   const M = rotation();
   const rot = G.transform(state.soup, M);
+  state.rot = rot;
+  state.M = M;
+  if (tunnel && tunnel.solver) {
+    tunnel.ground = state.ground;
+    tunnel.sliceMode = state.slice3;
+    tunnel.setBody(rot, state.R, G.bounds(rot));
+  }
 
   body.scale = Math.min(nx * 0.16, (ny * 0.3) / Math.max(0.5, state.R));
   body.chord = body.scale;
@@ -296,6 +342,7 @@ function renderField() {
   const d = image.data;
   const u0 = 0.1;
   const mode = state.field;
+  const rhoRef = refDensity();
   for (let y = 0; y < ny; y++) {
     const row = (ny - 1 - y) * nx;
     for (let x = 0; x < nx; x++) {
@@ -314,7 +361,7 @@ function renderField() {
         li = Math.min(255, (s / 1.6) * 255) | 0;
         L = LUT.speed;
       } else if (mode === 'pressure') {
-        const cp = (rho[k] - 1) / 3 / (0.5 * u0 * u0);
+        const cp = (rho[k] - rhoRef) / 3 / (0.5 * u0 * u0);
         li = Math.min(255, Math.max(0, ((cp + 2) / 3) * 255)) | 0;
         L = LUT.pressure;
       } else if (mode === 'vorticity') {
@@ -337,6 +384,14 @@ function renderField() {
     }
   }
   fieldCtx.putImageData(image, 0, 0);
+}
+
+// Free-stream density just past the inlet, the zero for pressure.
+function refDensity() {
+  const { nx, ny, rho } = solver;
+  let s = 0;
+  for (let y = 1; y < ny - 1; y++) s += rho[y * nx + 3];
+  return s / (ny - 2);
 }
 
 function vort(k, x, y) {
@@ -484,7 +539,7 @@ function drawArrows(ctx, v) {
 }
 
 function drawTexture() {
-  const { nx, ny } = solver;
+  const { ny } = solver;
   texCtx.imageSmoothingEnabled = true;
   texCtx.drawImage(fieldCanvas, 0, 0, texCanvas.width, texCanvas.height);
   if (state.tracers) drawTracers(texCtx, 0, 0, 2, ny, 1);
@@ -595,7 +650,21 @@ function update3D(M) {
     slicePlane.position.set(cx, depth, -cb);
   }
   const bb = new THREE.Box3().setFromObject(modelMesh);
-  grid.position.y = bb.min.y - 0.05;
+  grid.position.y = state.mode === '3d' && state.ground && tunnel.solver ? tunnel.floorY : bb.min.y - 0.05;
+  slicePlane.visible = state.mode === '2d';
+  if (tunnel) tunnel.setVisible(state.mode === '3d');
+  tunnel.lines.visible = state.mode === '3d' && state.lines;
+  windArrows.visible = state.mode === '2d';
+}
+
+function frameCamera() {
+  if (!state.rot) return;
+  const b = G.bounds(state.rot);
+  const c = new THREE.Vector3((b.min[0] + b.max[0]) / 2 + 0.15, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2);
+  const r = Math.max(0.7, state.R) * 3.2;
+  controls.target.copy(c);
+  camera.position.set(c.x - 0.75 * r, c.y + 0.5 * r, c.z + 1.05 * r);
+  camera.updateProjectionMatrix();
 }
 
 function resize3D() {
@@ -613,6 +682,7 @@ new ResizeObserver(resize3D).observe(v3);
 function resetStats() {
   hist.cd.length = 0;
   hist.cl.length = 0;
+  hist.cs.length = 0;
   hist.step.length = 0;
   crossings = [];
   lastClSign = 0;
@@ -621,20 +691,33 @@ function resetStats() {
 function coeffs() {
   const u0 = 0.1;
   const q = 0.5 * u0 * u0;
+  if (state.mode === '3d') {
+    const F = tunnel.solver.force;
+    const s2 = tunnel.scale * tunnel.scale;
+    return {
+      cd: F[0] / (q * body.frontal * s2),
+      cl: F[1] / (q * body.planform * s2),
+      cs: F[2] / (q * body.side * s2),
+    };
+  }
   const cd = body.href > 0 ? solver.fx / (q * body.href) : 0;
   const cl = solver.fy / (q * body.chord);
-  return { cd, cl };
+  return { cd, cl, cs: 0 };
 }
 
 function recordStats() {
-  if (solver.steps < solver.rampSteps * 2 || state.speed <= 0) return;
-  const { cd, cl } = coeffs();
+  const sv = active();
+  if (sv.steps < sv.rampSteps * 2 || state.speed <= 0) return;
+  const { cd, cl, cs } = coeffs();
+  if (!Number.isFinite(cd) || !Number.isFinite(cl)) return;
   hist.cd.push(cd);
   hist.cl.push(cl);
-  hist.step.push(solver.steps);
+  hist.cs.push(cs);
+  hist.step.push(sv.steps);
   if (hist.cd.length > HIST_MAX) {
     hist.cd.shift();
     hist.cl.shift();
+    hist.cs.shift();
     hist.step.shift();
   }
   // Vortex shedding: count low->high swings of the lift signal, with
@@ -651,7 +734,7 @@ function recordStats() {
     const smooth = (hist.cl[hist.cl.length - 1] + hist.cl[hist.cl.length - 2]) / 2;
     if (smooth > mean + h) {
       if (lastClSign < 0) {
-        crossings.push(solver.steps);
+        crossings.push(sv.steps);
         if (crossings.length > 8) crossings.shift();
       }
       lastClSign = 1;
@@ -678,21 +761,26 @@ function results() {
   const L = state.length;
   const rho = state.rho;
   const q = 0.5 * rho * U * U;
+  const is3 = state.mode === '3d';
   const cd = averaged(hist.cd);
   const cl = averaged(hist.cl);
+  const cs = averaged(hist.cs);
   const A = body.frontal * L * L;
-  const Aplan = (state.view === 'side' ? body.planform : body.side) * L * L;
+  const Aplan = (is3 || state.view === 'side' ? body.planform : body.side) * L * L;
   const drag = Number.isFinite(cd.mean) ? cd.mean * q * A : NaN;
   const lift = Number.isFinite(cl.mean) ? cl.mean * q * Aplan : NaN;
-  const dx = L / body.chord;
+  const side = is3 && Number.isFinite(cs.mean) ? cs.mean * q * body.side * L * L : NaN;
+  const dx = L / chordCells();
   const dt = U > 0 ? (dx * 0.1) / U : 0;
+  // Reference length for the Strouhal number: height across the flow, cells.
+  const href = is3 && state.rot ? (G.bounds(state.rot).size[1] || 0) * tunnel.scale : body.href;
 
   let st = NaN, freq = NaN;
   if (crossings.length >= 4 && cl.amp > 0.02) {
     const period = (crossings[crossings.length - 1] - crossings[0]) / (crossings.length - 1);
     if (period > 20) {
       const fLat = 1 / period;
-      st = (fLat * body.href) / 0.1;
+      st = (fLat * href) / 0.1;
       freq = fLat / dt;
     }
   }
@@ -701,7 +789,7 @@ function results() {
   const Fb = rho * V * GRAV;
   const Wt = state.mass * GRAV;
   const bodyDensity = V > 0 ? state.mass / V : NaN;
-  return { U, L, rho, q, cd, cl, A, Aplan, drag, lift, st, freq, V, Fb, Wt, bodyDensity, dt };
+  return { U, L, rho, q, cd, cl, cs, A, Aplan, drag, lift, side, st, freq, V, Fb, Wt, bodyDensity, dt };
 }
 
 // ------------------------------------------------------------ formatting --
@@ -742,9 +830,22 @@ function rows(list) {
 
 function updatePanels() {
   const r = results();
-  const side = state.view === 'side';
+  const is3 = state.mode === '3d';
+  const side = is3 || state.view === 'side';
   const liftName = side ? 'Lift' : 'Side force';
-  $('m-forces').innerHTML = rows([
+  const lf = r.lift;
+  if (is3) {
+    $('m-forces').innerHTML = rows([
+      ['Drag coefficient C<sub>d</sub>', fmtNum(r.cd.mean), 'big'],
+      ['Lift coefficient C<sub>l</sub>', fmtNum(r.cl.mean), 'big'],
+      ['Drag force', fmtSI(r.drag, 'N')],
+      [lf < 0 ? 'Downforce' : 'Lift', fmtSI(Math.abs(lf), 'N'), '', lf < 0 ? 'pushing the body down' : 'pushing the body up'],
+      ['Side force', fmtSI(r.side, 'N'), '', 'C<sub>s</sub> ' + fmtNum(r.cs.mean)],
+      ['Lift / drag', fmtNum(r.lift / r.drag)],
+      ['Power to push through', fmtSI(r.drag * r.U, 'W'), '', `${fmtNum((r.drag * r.U) / 745.7)} hp`],
+      ['Unsteadiness (C<sub>l</sub> swing)', `± ${fmtNum(r.cl.amp)}`],
+    ]);
+  } else $('m-forces').innerHTML = rows([
     ['Drag coefficient C<sub>d</sub>', fmtNum(r.cd.mean), 'big'],
     [`${liftName} coeff. C<sub>${side ? 'l' : 's'}</sub>`, fmtNum(r.cl.mean), 'big'],
     ['Drag force', fmtSI(r.drag, 'N')],
@@ -757,11 +858,11 @@ function updatePanels() {
   const sre = simRe();
   $('m-flow').innerHTML = rows([
     ['Reynolds number', fmtNum(re), '', re > 5e5 ? 'turbulent boundary layer likely' : re > 2e3 ? 'transitional / turbulent wake' : 'laminar-ish'],
-    ['Simulated Re (slice)', fmtNum(sre), sre < re * 0.5 ? 'warn' : '', sre < re * 0.5 ? 'lattice caps Re; LES models the rest' : ''],
+    [is3 ? 'Simulated Re (lattice)' : 'Simulated Re (slice)', fmtNum(sre), sre < re * 0.5 ? 'warn' : '', sre < re * 0.5 ? 'lattice caps Re; LES models the rest' : ''],
     ['Dynamic pressure', fmtSI(r.q, 'Pa')],
     ['Vortex shedding', Number.isFinite(r.freq) ? `${fmtNum(r.freq)} Hz` : '—'],
     ['Strouhal number', fmtNum(r.st)],
-    ['Sim time', `${fmtNum(solver.steps * r.dt)} s`],
+    ['Sim time', `${fmtNum(active().steps * r.dt)} s`],
   ]);
 
   const med = state.medium === 'air' ? 'air' : state.medium === 'custom' ? 'this fluid' : state.medium === 'sea' ? 'sea water' : 'fresh water';
@@ -800,9 +901,9 @@ function updatePanels() {
     ['Planform (top) area', fmtArea(body.planform * r.L * r.L)],
     ['Wetted surface', fmtArea(state.unitSurface * r.L * r.L)],
     ['Volume', fmtVol(r.V)],
-    ['Slice height', `${body.href} cells`],
+    ...(is3 ? [['Body length on grid', `${Math.round(tunnel.scale)} cells`]] : [['Slice height', `${body.href} cells`]]),
   ]);
-  $('st-steps').textContent = `${solver.steps.toLocaleString()} steps`;
+  $('st-steps').textContent = `${active().steps.toLocaleString()} steps`;
 }
 
 function verdictShort(ratio) {
@@ -883,18 +984,32 @@ function drawChart() {
 let frames = 0;
 let fpsT = performance.now();
 let frameNo = 0;
+let lastT = performance.now();
 function frame() {
   requestAnimationFrame(frame);
   frameNo++;
+  const now = performance.now();
+  const dtSec = Math.min(0.1, (now - lastT) / 1000);
+  lastT = now;
+
+  if (state.mode === 'wifi') wifiFrame();
+  else if (state.mode === '3d') frame3D(dtSec);
+  else frame2D();
+
+  frames++;
+  if (now - fpsT > 1000) {
+    $('st-fps').textContent = `${Math.round((frames * 1000) / (now - fpsT))} fps`;
+    frames = 0;
+    fpsT = now;
+  }
+}
+
+function frame2D() {
   if (state.running && solver) {
     solver.run(state.spf);
     if (!solver.isFinite()) {
       solver.reset();
-      state.cs = Math.min(0.3, state.cs + 0.04);
-      $('in-cs').value = state.cs;
-      $('out-cs').textContent = state.cs.toFixed(2);
-      solver.cs = state.cs;
-      toast('Flow blew up. Restarted with a stronger turbulence model.');
+      bumpTurbulence();
     }
     recordStats();
     if (state.field === 'smoke') advectDye(state.spf);
@@ -911,13 +1026,273 @@ function frame() {
   }
   controls.update();
   renderer.render(scene, camera);
+}
 
-  frames++;
-  const now = performance.now();
-  if (now - fpsT > 1000) {
-    $('st-fps').textContent = `${Math.round((frames * 1000) / (now - fpsT))} fps`;
-    frames = 0;
-    fpsT = now;
+function bumpTurbulence() {
+  state.cs = Math.min(0.3, state.cs + 0.04);
+  $('in-cs').value = state.cs;
+  $('out-cs').textContent = state.cs.toFixed(2);
+  updatePhysics();
+  toast('Flow blew up. Restarted with a stronger turbulence model.');
+}
+
+function frame3D(dtSec) {
+  const s3 = tunnel.solver;
+  if (s3) {
+    if (state.running) {
+      s3.run(state.spf3);
+      if (!s3.force.every(Number.isFinite)) {
+        s3.reset();
+        bumpTurbulence();
+      }
+      recordStats();
+    }
+    // Spread the CPU-side work over frames: field readback + streamlines,
+    // then slice + surface pressure.
+    const phase = frameNo % 6;
+    if (phase === 0 && (state.running || !fieldPrimed)) {
+      s3.readField();
+      fieldPrimed = true;
+      if (state.lines) tunnel.updateStreamlines({ density: state.density, rake: state.rake });
+    } else if (phase === 3 && fieldPrimed) {
+      tunnel.updateSlice();
+      if (state.pressure) paintPressure();
+    }
+    tunnel.lineMat.uniforms.time.value += state.pulse * dtSec * 0.8;
+    if (frameNo % 6 === 0) {
+      updatePanels();
+      drawChart();
+    }
+  }
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+let pressureBuf = null;
+let fieldPrimed = false;
+function paintPressure() {
+  if (!modelMesh) return;
+  const geo = modelMesh.geometry;
+  const pos = geo.attributes.position.array;
+  if (!pressureBuf || pressureBuf.length !== pos.length) pressureBuf = new Float32Array(pos.length);
+  tunnel.pressureColors(pos, geo.attributes.normal.array, state.M, pressureBuf);
+  let attr = geo.attributes.color;
+  if (!attr || attr.array !== pressureBuf) {
+    geo.setAttribute('color', new THREE.BufferAttribute(pressureBuf, 3));
+    attr = geo.attributes.color;
+  }
+  attr.needsUpdate = true;
+  if (!modelMat.vertexColors) {
+    modelMat.vertexColors = true;
+    modelMat.color.set(0xffffff);
+    modelMat.needsUpdate = true;
+  }
+}
+
+function restoreColors() {
+  if (!modelMesh) return;
+  const geo = modelMesh.geometry;
+  if (state.colors && state.colors.length === state.soup.length) {
+    geo.setAttribute('color', new THREE.BufferAttribute(state.colors, 3));
+    modelMat.vertexColors = true;
+    modelMat.color.set(0xffffff);
+  } else {
+    geo.deleteAttribute('color');
+    modelMat.vertexColors = false;
+    modelMat.color.set(0xc8d2e0);
+  }
+  modelMat.needsUpdate = true;
+}
+
+// ------------------------------------------------------------------ wifi --
+let wifi = null;
+const wgl = $('wifi-gl');
+const wui = $('wifi-ui');
+const wctx = wui.getContext('2d');
+let wDrag = null;
+let wHover = null;
+const undoStack = [];
+
+function makeWifi() {
+  try {
+    wifi = new WifiSim(wgl);
+    wifi.band = state.band;
+    wifi.build();
+  } catch (e) {
+    console.error(e);
+    toast(`WiFi sim needs WebGL2 float support: ${e.message}`);
+    wifi = null;
+  }
+}
+
+function wifiView() {
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.round(wgl.clientWidth * dpr), ch = Math.round(wgl.clientHeight * dpr);
+  for (const c of [wgl, wui]) {
+    if (c.width !== cw || c.height !== ch) {
+      c.width = cw;
+      c.height = ch;
+    }
+  }
+  const s = Math.min(cw / wifi.nx, ch / wifi.ny);
+  return { s, ox: (cw - wifi.nx * s) / 2, oy: (ch - wifi.ny * s) / 2, dpr };
+}
+
+function wToScreen(v, x, y) {
+  const [cx, cy] = wifi.toCell(x, y);
+  return [v.ox + cx * v.s, v.oy + cy * v.s];
+}
+function wFromEvent(e) {
+  const v = wifiView();
+  const cx = (e.offsetX * v.dpr - v.ox) / v.s, cy = (e.offsetY * v.dpr - v.oy) / v.s;
+  return wifi.fromCell(cx, cy);
+}
+
+function wifiFrame() {
+  if (!wifi) return;
+  if (state.running) wifi.run(state.wspf);
+  const v = wifiView();
+  wifi.render(v);
+  drawWifiUI(v);
+  if (frameNo % 20 === 0) {
+    wifi.updateStats();
+    updateWifiPanels();
+  }
+}
+
+function drawWifiUI(v) {
+  const c = wctx;
+  c.clearRect(0, 0, wui.width, wui.height);
+  const d = v.dpr;
+  // Scale bar
+  const [x0, y0] = wToScreen(v, 0, wifi.size[1] + 0.35);
+  const [x1] = wToScreen(v, 1, 0);
+  c.strokeStyle = '#dfe6f1';
+  c.fillStyle = '#dfe6f1';
+  c.lineWidth = 2 * d;
+  c.beginPath();
+  c.moveTo(x0, y0);
+  c.lineTo(x1, y0);
+  c.stroke();
+  c.font = `${11 * d}px -apple-system, system-ui, sans-serif`;
+  c.fillText('1 m', x1 + 6 * d, y0 + 4 * d);
+  // Wall being drawn
+  if (wDrag && wDrag.kind === 'wall' && wDrag.to) {
+    const [ax, ay] = wToScreen(v, wDrag.from[0], wDrag.from[1]);
+    const [bx, by] = wToScreen(v, wDrag.to[0], wDrag.to[1]);
+    const m = MATERIALS[+$('in-mat').value];
+    c.strokeStyle = `rgb(${m.color.join(',')})`;
+    c.lineWidth = Math.max(3 * d, m.t * wifi.cellsPerM * v.s);
+    c.setLineDash([6 * d, 4 * d]);
+    c.beginPath();
+    c.moveTo(ax, ay);
+    c.lineTo(bx, by);
+    c.stroke();
+    c.setLineDash([]);
+    const len = Math.hypot(wDrag.to[0] - wDrag.from[0], wDrag.to[1] - wDrag.from[1]);
+    c.fillStyle = '#fff';
+    c.fillText(`${len.toFixed(2)} m`, bx + 8 * d, by - 8 * d);
+  }
+  // Routers
+  wifi.routers.forEach((r, i) => {
+    const [x, y] = wToScreen(v, r.x, r.y);
+    const t = (performance.now() / 1000) % 1.6;
+    c.strokeStyle = `rgba(54,195,164,${0.8 - t / 2})`;
+    c.lineWidth = 2 * d;
+    c.beginPath();
+    c.arc(x, y, (8 + t * 18) * d, 0, Math.PI * 2);
+    c.stroke();
+    c.fillStyle = '#0b0e14';
+    c.strokeStyle = '#36c3a4';
+    c.beginPath();
+    c.arc(x, y, 9 * d, 0, Math.PI * 2);
+    c.fill();
+    c.stroke();
+    c.fillStyle = '#36c3a4';
+    c.textAlign = 'center';
+    c.fillText(`${i + 1}`, x, y + 4 * d);
+    c.textAlign = 'left';
+  });
+  // Eraser target
+  if (state.tool === 'erase' && wHover) {
+    const w = nearestWall(wHover[0], wHover[1]);
+    if (w) {
+      const [ax, ay] = wToScreen(v, w.x1, w.y1);
+      const [bx, by] = wToScreen(v, w.x2, w.y2);
+      c.strokeStyle = '#ef5f5f';
+      c.lineWidth = 4 * d;
+      c.beginPath();
+      c.moveTo(ax, ay);
+      c.lineTo(bx, by);
+      c.stroke();
+    }
+  }
+}
+
+function nearestWall(x, y, maxD = 0.35) {
+  let best = null, bd = maxD;
+  for (const w of wifi.walls) {
+    const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
+    const L2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((x - w.x1) * dx + (y - w.y1) * dy) / L2));
+    const d = Math.hypot(w.x1 + t * dx - x, w.y1 + t * dy - y);
+    if (d < bd) {
+      bd = d;
+      best = w;
+    }
+  }
+  return best;
+}
+
+function pushUndo() {
+  undoStack.push(JSON.stringify({ walls: wifi.walls, routers: wifi.routers }));
+  if (undoStack.length > 50) undoStack.shift();
+}
+
+function signalWord(dbm) {
+  if (dbm >= -50) return 'excellent';
+  if (dbm >= -60) return 'very good';
+  if (dbm >= -67) return 'good: video calls, 4K';
+  if (dbm >= -75) return 'fair: browsing ok';
+  if (dbm >= -85) return 'weak: drops likely';
+  return 'no usable signal';
+}
+
+function updateWifiPanels() {
+  const st = wifi.stats;
+  const pct = (v) => (st ? `${(v * 100).toFixed(0)}%` : '—');
+  $('m-wifi').innerHTML = rows([
+    ['Good or better (≥ -67 dBm)', pct(st?.great), 'big'],
+    ['Fair (-67 to -75)', pct(st?.ok)],
+    ['Weak (-75 to -85)', pct(st?.weak)],
+    ['Dead zones (< -85)', pct(st?.dead)],
+    ['Average signal', st ? `${st.avg.toFixed(0)} dBm` : '—'],
+  ]);
+  const lambda = 299792458 / (wifi.freqGHz * 1e9);
+  $('m-wifi2').innerHTML = rows([
+    ['Frequency', `${wifi.freqGHz} GHz`],
+    ['Wavelength', `${(lambda * 100).toFixed(1)} cm`],
+    ['Grid', `${wifi.nx} × ${wifi.ny}`],
+    ['Cell size', `${(wifi.dx * 1000).toFixed(1)} mm`],
+    ['Routers', `${wifi.routers.length}`],
+    ['Walls', `${wifi.walls.length}`],
+    ['Sim time', `${((wifi.steps * 0.5 * wifi.dx) / 299792458 * 1e9).toFixed(1)} ns`],
+  ]);
+  $('st-steps').textContent = `${wifi.steps.toLocaleString()} steps`;
+  $('st-engine').textContent = `GPU FDTD · ${wifi.nx}×${wifi.ny}`;
+  const L = $('wlegend');
+  if (state.wview === 'signal') {
+    const stops = [
+      ['#21c7a8', '-40'],
+      ['#4dcc4d', '-55'],
+      ['#eddb40', '-67'],
+      ['#f58c33', '-75'],
+      ['#d9332e', '-85'],
+      ['#2e0d12', '-95'],
+    ];
+    L.innerHTML = `Signal strength (dBm)<div class="bar" style="background:linear-gradient(90deg,${stops.map((s) => s[0]).join(',')})"></div><div class="ends">${stops.map((s) => `<span>${s[1]}</span>`).join('')}</div>`;
+  } else {
+    L.innerHTML = 'Electric field right now (blue −, orange +)';
   }
 }
 
@@ -1195,6 +1570,11 @@ function initUI() {
   };
   play.addEventListener('click', togglePlay);
   const resetFlow = () => {
+    if (state.mode === 'wifi') {
+      if (wifi) wifi.reset();
+      return;
+    }
+    if (state.mode === '3d' && tunnel.solver) tunnel.solver.reset();
     solver.reset();
     dye.fill(0);
     initTracers();
@@ -1226,15 +1606,264 @@ function initUI() {
     }
     const U = state.speed;
     const u = (Math.hypot(solver.ux[k], solver.uy[k]) / 0.1) * U;
-    const cp = (solver.rho[k] - 1) / 3 / (0.5 * 0.01);
+    const cp = (solver.rho[k] - refDensity()) / 3 / (0.5 * 0.01);
     const p = cp * 0.5 * state.rho * U * U;
     const w = (vort(k, gx, gy) / 0.1) * (U / (state.length / body.chord));
     $('probe').textContent = `speed ${fmtNum(u)} m/s · pressure ${fmtNum(p)} Pa · spin ${fmtNum(w)} 1/s`;
   });
   flowCanvas.addEventListener('mouseleave', () => ($('probe').textContent = ''));
+
+  // ---- mode ----
+  seg('seg-mode', 'mode', (m) => setMode(m));
+
+  // ---- 3D display ----
+  $('in-lines').addEventListener('change', (e) => {
+    state.lines = e.target.checked;
+    tunnel.lines.visible = state.lines && state.mode === '3d';
+  });
+  seg('seg-rake', 'rake');
+  bindSlider('in-density', 'density', (v) => `${v}`);
+  bindSlider('in-pulse', 'pulse', (v) => (v === 0 ? 'off' : `${v.toFixed(2)}×`), () => {
+    tunnel.lineMat.uniforms.pulses.value = state.pulse === 0 ? 0 : 1.4;
+  });
+  $('in-pressure').addEventListener('change', (e) => {
+    state.pressure = e.target.checked;
+    if (state.pressure) paintPressure();
+    else restoreColors();
+    updateLegend3();
+  });
+  $('in-ground').addEventListener('change', (e) => {
+    state.ground = e.target.checked;
+    rebuildBody();
+    resetStats();
+  });
+  $('in-slice3').value = state.slice3;
+  $('in-slice3').addEventListener('change', (e) => {
+    state.slice3 = e.target.value;
+    tunnel.sliceMode = state.slice3;
+    tunnel.placeSlice();
+    tunnel.updateSlice();
+  });
+  $('in-res3').value = state.res3;
+  $('in-res3').addEventListener('change', (e) => {
+    state.res3 = +e.target.value;
+    makeTunnel();
+  });
+  bindSlider('in-spf3', 'spf3', (v) => `${v}`);
+
+  // ---- WiFi ----
+  const matSel = $('in-mat');
+  MATERIALS.forEach((m, i) => {
+    if (!m) return;
+    const o = document.createElement('option');
+    o.value = i;
+    o.textContent = `${m.name} (${Math.round(m.t * 100)} cm)`;
+    matSel.appendChild(o);
+  });
+  matSel.value = 1;
+  seg('seg-band', 'band', (b) => {
+    if (!wifi) return;
+    wifi.band = b;
+    wifi.build();
+  });
+  seg('seg-wview', 'wview', (v) => wifi && (wifi.mode = v === 'signal' ? 0 : 1));
+  seg('seg-tool', 'tool');
+  $('in-ppw').value = '9';
+  $('in-ppw').addEventListener('change', (e) => {
+    if (!wifi) return;
+    wifi.ppw = +e.target.value;
+    wifi.build();
+  });
+  bindSlider('in-wspf', 'wspf', (v) => `${v}`);
+  $('btn-addrouter').addEventListener('click', () => {
+    if (!wifi) return;
+    if (wifi.routers.length >= 4) return toast('Four routers max.');
+    pushUndo();
+    wifi.routers.push({ x: wifi.size[0] / 2, y: wifi.size[1] / 2 });
+    toast('Router added in the middle. Drag it where you want it.');
+  });
+  $('btn-delrouter').addEventListener('click', () => {
+    if (!wifi || wifi.routers.length <= 1) return toast('Need at least one router.');
+    pushUndo();
+    wifi.routers.pop();
+    wifi.reset();
+  });
+  $('btn-undo').addEventListener('click', () => {
+    if (!wifi || !undoStack.length) return;
+    const snap = JSON.parse(undoStack.pop());
+    wifi.walls = snap.walls;
+    wifi.routers = snap.routers;
+    wifi.rasterize();
+  });
+  $('btn-clearwalls').addEventListener('click', () => {
+    if (!wifi) return;
+    pushUndo();
+    wifi.walls = [];
+    wifi.rasterize();
+  });
+  $('btn-layout').addEventListener('click', () => {
+    if (!wifi) return;
+    pushUndo();
+    const l = defaultLayout();
+    wifi.walls = l.walls;
+    wifi.routers = l.routers;
+    wifi.rasterize();
+    wifi.reset();
+  });
+  window.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'z' && state.mode === 'wifi') {
+      e.preventDefault();
+      $('btn-undo').click();
+    }
+  });
+
+  const snap = (p, from, straight) => {
+    let [x, y] = p.map((v) => Math.round(v * 20) / 20);
+    if (straight && from) {
+      if (Math.abs(x - from[0]) > Math.abs(y - from[1])) y = from[1];
+      else x = from[0];
+    }
+    return [x, y];
+  };
+  wui.addEventListener('pointerdown', (e) => {
+    if (!wifi) return;
+    wui.setPointerCapture(e.pointerId);
+    const p = wFromEvent(e);
+    if (state.tool === 'router') {
+      let best = -1, bd = Infinity;
+      wifi.routers.forEach((r, i) => {
+        const d = Math.hypot(r.x - p[0], r.y - p[1]);
+        if (d < bd) {
+          bd = d;
+          best = i;
+        }
+      });
+      if (best >= 0) {
+        pushUndo();
+        wDrag = { kind: 'router', i: best };
+        wifi.routers[best].x = p[0];
+        wifi.routers[best].y = p[1];
+      }
+    } else if (state.tool === 'wall') {
+      wDrag = { kind: 'wall', from: snap(p), to: null };
+    } else {
+      const w = nearestWall(p[0], p[1]);
+      if (w) {
+        pushUndo();
+        wifi.walls = wifi.walls.filter((x) => x !== w);
+        wifi.rasterize();
+      }
+    }
+  });
+  wui.addEventListener('pointermove', (e) => {
+    if (!wifi) return;
+    const p = wFromEvent(e);
+    wHover = p;
+    if (wDrag && wDrag.kind === 'router') {
+      const r = wifi.routers[wDrag.i];
+      r.x = Math.max(-0.4, Math.min(wifi.size[0] + 0.4, p[0]));
+      r.y = Math.max(-0.4, Math.min(wifi.size[1] + 0.4, p[1]));
+    } else if (wDrag && wDrag.kind === 'wall') {
+      wDrag.to = snap(p, wDrag.from, e.shiftKey);
+    }
+    const pr = wifi.probe(p[0], p[1]);
+    if (pr && p[0] >= -0.6 && p[1] >= -0.6 && p[0] <= wifi.size[0] + 0.6 && p[1] <= wifi.size[1] + 0.6) {
+      const inWall = pr.wall ? ` · inside ${MATERIALS[pr.wall].name.toLowerCase()}` : '';
+      $('wprobe').textContent = `(${p[0].toFixed(1)}, ${p[1].toFixed(1)}) m · ${pr.dbm.toFixed(0)} dBm · ${signalWord(pr.dbm)}${inWall}`;
+    } else $('wprobe').textContent = '';
+  });
+  const endDrag = () => {
+    if (wDrag && wDrag.kind === 'wall' && wDrag.to) {
+      const [x1, y1] = wDrag.from, [x2, y2] = wDrag.to;
+      if (Math.hypot(x2 - x1, y2 - y1) > 0.08) {
+        pushUndo();
+        wifi.walls.push({ x1, y1, x2, y2, m: +$('in-mat').value });
+        wifi.rasterize();
+      }
+    }
+    wDrag = null;
+  };
+  wui.addEventListener('pointerup', endDrag);
+  wui.addEventListener('pointercancel', endDrag);
+  wui.addEventListener('pointerleave', () => {
+    wHover = null;
+    $('wprobe').textContent = '';
+  });
+}
+
+function makeTunnel() {
+  try {
+    tunnel.makeSolver(state.res3);
+  } catch (e) {
+    console.error(e);
+    toast(`3D tunnel unavailable on this GPU (${e.message}). Using the 2D slice.`);
+    setMode('2d');
+    return false;
+  }
+  tunnel.sliceMode = state.slice3;
+  rebuildBody();
+  updatePhysics();
+  resetStats();
+  const [a, b, c] = GRIDS[state.res3];
+  $('st-engine').textContent = `GPU 3D solver · ${a}×${b}×${c}`;
+  return true;
+}
+
+function setMode(m) {
+  state.mode = m;
+  document.body.dataset.mode = m;
+  document.querySelectorAll('#seg-mode button').forEach((b) => b.classList.toggle('on', b.dataset.v === m));
+  if (m === '3d') {
+    if (!tunnel.solver && !makeTunnel()) return;
+    const [a, b, c] = GRIDS[state.res3];
+    $('st-engine').textContent = `GPU 3D solver · ${a}×${b}×${c}`;
+    $('v3-title').textContent = 'Wind tunnel';
+    if (state.pressure) paintPressure();
+  } else if (m === '2d') {
+    $('st-engine').textContent = `${solver.kind} solver · ${solver.nx}×${solver.ny}`;
+    $('v3-title').textContent = '3D model + live slice';
+    restoreColors();
+  } else if (m === 'wifi') {
+    if (!wifi) makeWifi();
+    if (wifi) wifi.mode = state.wview === 'signal' ? 0 : 1;
+  }
+  if (m !== 'wifi' && state.soup) {
+    rebuildBody();
+    resetStats();
+  }
+  updateLegend3();
+  requestAnimationFrame(() => {
+    resize3D();
+    if (m !== 'wifi') frameCamera();
+  });
+}
+
+function updateLegend3() {
+  const L = $('legend3');
+  if (state.mode !== '3d') {
+    L.style.display = 'none';
+    return;
+  }
+  L.style.display = '';
+  const bar = (data) => {
+    const stops = [];
+    for (let i = 0; i <= 8; i++) {
+      const j = Math.round((i / 8) * 255) * 4;
+      stops.push(`rgb(${data[j]},${data[j + 1]},${data[j + 2]}) ${(i / 8) * 100}%`);
+    }
+    return `<div class="bar" style="background:linear-gradient(90deg,${stops.join(',')})"></div>`;
+  };
+  const U = state.speed;
+  let html = `Flow speed${bar(tunnel.jet.data)}<div class="ends"><span>0</span><span>${fmtNum(U * 0.75)}</span><span>${fmtNum(U * 1.5)} m/s</span></div>`;
+  if (state.pressure) {
+    const q = 0.5 * state.rho * U * U;
+    html += `<div style="margin-top:6px">Surface pressure</div>${bar(tunnel.press.data)}<div class="ends"><span>${fmtNum(-1.5 * q)}</span><span>0</span><span>+${fmtNum(q)} Pa</span></div>`;
+  }
+  L.innerHTML = html;
 }
 
 // ------------------------------------------------------------------ boot --
+const tunnel = new Tunnel3D(scene);
 initUI();
 if (!('WebGL2RenderingContext' in window) || location.search.includes('cpu')) useGpu = false;
 state.res = 1;
@@ -1251,5 +1880,6 @@ if (!useGpu) {
   makeSolver();
 }
 updateLegend();
+setMode(new URLSearchParams(location.search).get('mode') || '3d');
 resize3D();
 requestAnimationFrame(frame);
