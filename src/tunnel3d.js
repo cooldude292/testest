@@ -156,12 +156,25 @@ export class Tunnel3D {
   }
 
   // rot: rotated triangle soup in model units (length 1 along X before rotation).
-  setBody(rot, R, bounds) {
+  // frontal: projected area facing the flow, in model units^2.
+  // bounds: of the rotated body. ub / frontal: the unrotated body's bounds
+  // and frontal area (model units), used for sizing so rotating doesn't rescale.
+  setBody(rot, bounds, ub, frontal) {
     const s = this.solver;
     if (!s) return;
     const { nx, ny, nz } = s;
     this.bounds = bounds;
-    const sc = Math.min(nx * 0.28, (0.36 * Math.min(ny, nz)) / Math.max(0.45, R));
+    s.ground = this.ground;
+    // Keep blockage (body frontal area / tunnel cross-section) around 7%, like
+    // a decent real tunnel, and leave room around the body in every direction.
+    const size = ub.size;
+    const sc = Math.min(
+      nx * 0.25,
+      Math.sqrt((0.07 * ny * nz) / Math.max(1e-3, frontal)),
+      (0.45 * ny) / Math.max(1e-3, size[1]),
+      (0.6 * nz) / Math.max(1e-3, size[2]),
+      (0.4 * Math.min(ny, nz)) / Math.max(0.3, Math.hypot(size[0], size[1], size[2]) / 2),
+    );
     this.scale = sc;
     const ox = nx * 0.3;
     const oy = this.ground ? 2.05 - bounds.min[1] * sc : ny / 2 + 0.3;

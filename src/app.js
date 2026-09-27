@@ -174,6 +174,8 @@ function setModel(soup, name, colors = null) {
   }
   state.R = R;
   state.unitVolume = G.volume(state.soup);
+  state.ub = G.bounds(state.soup);
+  state.uFrontal = G.projectedArea(state.soup, 0);
   state.unitSurface = G.surfaceArea(state.soup);
   buildMesh();
   rebuildBody();
@@ -207,6 +209,7 @@ function loadShape(key) {
   }
   setModel(soup, s.label, colors);
   frameCamera();
+  updateLegend();
 }
 
 function orientImported() {
@@ -240,23 +243,29 @@ function rebuildBody() {
   const rot = G.transform(state.soup, M);
   state.rot = rot;
   state.M = M;
+  body.frontal = G.projectedArea(rot, 0);
+  body.planform = G.projectedArea(rot, 1);
+  body.side = G.projectedArea(rot, 2);
   if (tunnel && tunnel.solver) {
     tunnel.ground = state.ground;
     tunnel.sliceMode = state.slice3;
-    tunnel.setBody(rot, state.R, G.bounds(rot));
+    tunnel.setBody(rot, G.bounds(rot), state.ub, state.uFrontal);
   }
 
-  body.scale = Math.min(nx * 0.16, (ny * 0.3) / Math.max(0.5, state.R));
-  body.chord = body.scale;
-  body.ox = nx * 0.3;
-  body.oy = ny / 2 + 0.37; // off-centre by a hair so symmetric bodies still start shedding
   const side = state.view === 'side';
   const ia = 0;
   const ib = side ? 1 : 2;
   const ic = side ? 2 : 1;
   body.signB = side ? 1 : -1;
-
   const b = G.bounds(rot);
+
+  // Keep the body to ~13% of the tunnel height so blockage doesn't pump up drag.
+  // (sized from the unrotated body so turning it doesn't rescale it)
+  body.scale = Math.min(nx * 0.16, (ny * 0.13) / Math.max(0.05, state.ub.size[ib]));
+  body.chord = body.scale;
+  body.ox = nx * 0.3;
+  body.oy = ny / 2 + 0.37; // off-centre by a hair so symmetric bodies still start shedding
+
   body.sliceHalf = Math.max(Math.abs(b.min[ic]), Math.abs(b.max[ic]));
   body.sliceValue = state.slicePos * body.sliceHalf * 0.98;
 
@@ -273,10 +282,6 @@ function rebuildBody() {
   solver.setSolid(mask);
   const ext = G.maskExtent(mask, nx, ny);
   body.href = ext.h;
-
-  body.frontal = G.projectedArea(rot, 0);
-  body.planform = G.projectedArea(rot, 1);
-  body.side = G.projectedArea(rot, 2);
 
   updatePhysics();
   update3D(M);
@@ -567,6 +572,7 @@ function updateLegend() {
     html = 'Smoke streaks injected at the inlet';
   }
   $('legend').innerHTML = html;
+  updateLegend3();
 }
 
 // -------------------------------------------------------------------- 3D --
@@ -661,7 +667,7 @@ function frameCamera() {
   if (!state.rot) return;
   const b = G.bounds(state.rot);
   const c = new THREE.Vector3((b.min[0] + b.max[0]) / 2 + 0.15, (b.min[1] + b.max[1]) / 2, (b.min[2] + b.max[2]) / 2);
-  const r = Math.max(0.7, state.R) * 3.2;
+  const r = Math.max(0.7, state.R) * 2.4;
   controls.target.copy(c);
   camera.position.set(c.x - 0.75 * r, c.y + 0.5 * r, c.z + 1.05 * r);
   camera.updateProjectionMatrix();

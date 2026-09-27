@@ -184,8 +184,8 @@ void main() {
   }
   if (m > 0) col = mix(col, MC[m], 0.85);
   // dim the absorbing border
-  vec2 m = vec2(p) / cellsPerM - margin;
-  if (m.x < -0.05 || m.y < -0.05 || m.x > plan.x + 0.05 || m.y > plan.y + 0.05) col = mix(vec3(0.043, 0.055, 0.078), col, 0.3);
+  vec2 pm = vec2(p) / cellsPerM - margin;
+  if (pm.x < -0.05 || pm.y < -0.05 || pm.x > plan.x + 0.05 || pm.y > plan.y + 0.05) col = mix(vec3(0.043, 0.055, 0.078), col, 0.3);
   o = vec4(col, 1.0);
 }`;
 

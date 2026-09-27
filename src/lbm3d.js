@@ -66,7 +66,7 @@ function stepShader(outputs) {
   return (
     header() +
     `${decl}
-uniform float uin, tau0, smag, accum;
+uniform float uin, tau0, smag, accum, ground;
 
 void main() {
   ivec2 a = ivec2(gl_FragCoord.xy);
@@ -86,8 +86,18 @@ void main() {
     ${write}
     return;
   }
-  if (p.x == 0 || p.y == 0 || p.y == NN.y - 1 || p.z == 0 || p.z == NN.z - 1) {
+  if (p.x == 0 || (ground > 0.5 && p.y == 0)) {
+    // Inlet, and the rolling road when there's a ground.
     for (int i = 0; i < 19; i++) f[i] = feq(i, 1.0, vec3(uin, 0.0, 0.0));
+    ${write}
+    return;
+  }
+  if (p.y == 0 || p.y == NN.y - 1 || p.z == 0 || p.z == NN.z - 1) {
+    // Open sides: copy the neighbour just inside, so flow pushed aside by
+    // the body can leave instead of being squeezed (tunnel blockage).
+    ivec3 q = clamp(p, ivec3(0, 1, 1), NN - ivec3(1, 2, 2));
+    ivec2 qa = atl(q);
+    for (int i = 0; i < 19; i++) f[i] = fpost(i, qa);
     ${write}
     return;
   }
@@ -240,6 +250,7 @@ export class Lbm3D {
     this.rampSteps = 500;
     this.force = [0, 0, 0];
     this.rhoRef = 1;
+    this.ground = false;
     this.solid = new Uint8Array(this.n);
 
     const t = tiling(nx, ny, nz);
@@ -416,6 +427,7 @@ export class Lbm3D {
         gl.uniform1f(prog.loc.tau0, this.tau0);
         gl.uniform1f(prog.loc.smag, smag);
         gl.uniform1f(prog.loc.accum, s === 0 ? 0 : 1);
+        gl.uniform1f(prog.loc.ground, this.ground ? 1 : 0);
         gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbs[pi]);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
       });
