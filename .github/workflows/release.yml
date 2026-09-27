@@ -1,0 +1,77 @@
+name: Build macOS app
+
+on:
+  push:
+    branches: [main, claude/physics-sim-turtle-app-tbx2zz]
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: true
+
+jobs:
+  dmg:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build universal .app (Intel + Apple Silicon)
+        run: npm run dist
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Ad-hoc sign so it runs on Apple Silicon
+        run: |
+          APP="$(ls -d dist/mac-universal/*.app)"
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+
+      - name: Package .dmg
+        id: dmg
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          APP="$(ls -d dist/mac-universal/*.app)"
+          STAGE=dist/dmg-stage
+          rm -rf "$STAGE" && mkdir -p "$STAGE"
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          DMG="dist/FlowTunnel-${VERSION}.dmg"
+          hdiutil create -volname "FlowTunnel" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+          echo "path=$DMG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FlowTunnel-dmg
+          path: ${{ steps.dmg.outputs.path }}
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.dmg.outputs.version }}
+          name: FlowTunnel v${{ steps.dmg.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          files: ${{ steps.dmg.outputs.path }}
+          body: |
+            FlowTunnel: real-time wind tunnel + water tank for any 3D model.
+
+            **Install:** open the .dmg, drag FlowTunnel into Applications.
+
+            The app isn't notarized by Apple, so the first launch gets blocked. Fix it once:
+            - Right-click FlowTunnel in Applications, choose **Open**, then **Open** again, or
+            - System Settings > Privacy & Security > scroll down > **Open Anyway**, or
+            - Terminal: `xattr -cr /Applications/FlowTunnel.app`
+
+            Built from ${{ github.sha }}.

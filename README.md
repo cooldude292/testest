@@ -1,71 +1,58 @@
-# Lumen — Motion Studio
+# FlowTunnel
 
-A motion graphics & compositing tool that runs entirely in your browser. Think After Effects, reimagined with a clean, Linear-style interface. Zero dependencies, zero build step — just open `index.html`.
+A real-time wind tunnel and water tank for macOS. Drop in a 3D model (a turtle, say), pick air or water, crank the speed, and watch the flow wrap around it live while it spits out drag, lift, buoyancy and vortex shedding numbers.
 
-![Lumen](https://img.shields.io/badge/dependencies-0-5e6ad2) ![Vanilla JS](https://img.shields.io/badge/vanilla-JS-4cb782)
+## Download
 
-## Running it
+Grab the `.dmg` from [Releases](../../releases/latest), open it, drag **FlowTunnel** into Applications.
+
+It isn't notarized by Apple, so macOS blocks the first launch. Fix it once, any of these:
+
+- Right-click the app in Applications, **Open**, then **Open** again.
+- System Settings > Privacy & Security > scroll down > **Open Anyway**.
+- Terminal: `xattr -cr /Applications/FlowTunnel.app`
+
+Universal build, runs on Apple Silicon and Intel.
+
+## What it does
+
+- **Import any model**: STL, OBJ, GLB, PLY. Button or drag-and-drop. Auto-orients it (longest axis along the flow). Built-ins: turtle, sphere, cylinder, NACA 2412 wing, flat plate.
+- **Fluids**: air, fresh water, sea water, or custom density + viscosity.
+- **Live flow field** on a slice through the body: speed, pressure, vorticity, smoke streaks, particle tracers, velocity vectors. Hover anywhere to read local speed, pressure and spin in real units.
+- **Side view** (lift) or **top view** (side force). **Silhouette** of the whole body or a **cross-section** at any depth.
+- **Orientation**: pitch / angle of attack, yaw, roll, flip nose.
+- **Numbers**: drag and lift coefficients, drag and lift in newtons, L/D, power to hold position against the current, Reynolds number, vortex shedding frequency and Strouhal number.
+- **Buoyancy**: volume from the mesh, buoyant force vs weight, floats/sinks verdict, % submerged, mass needed for neutral buoyancy, rough rise/sink speed. Checked against fresh and sea water too.
+- **3D view** of the model with the live slice cutting through it.
+- **Export CSV** of the results and the force history.
+
+## How it works (and where it's honest about limits)
+
+The flow is solved with a D2Q9 lattice Boltzmann method plus a Smagorinsky LES turbulence model, on the GPU via WebGL2 (CPU fallback if the GPU path isn't available). Forces come from momentum exchange at the body surface.
+
+It's a **2D slice**, not a full 3D solve. The 3D force estimates apply the slice's coefficients to the body's real frontal/planform area. The lattice also can't hit real-world Reynolds numbers of 10^5 to 10^6, so it runs as high as it stably can and lets the turbulence model handle the rest; the app shows both numbers. Sanity check: a cylinder gives Strouhal ≈ 0.22 (textbook ~0.2). 2D drag at high Re runs high compared with real 3D bodies, which is a known 2D thing.
+
+So: great for comparing shapes, angles, fluids and seeing what the flow does. Don't use it to certify an aircraft.
+
+## Develop
 
 ```sh
-# option 1: just open it
-open index.html
-
-# option 2: serve it (recommended for importing large media)
-npx http-server . -p 8080
+npm install
+npm start          # run the Electron app
+npm run serve      # or run it in a browser at http://localhost:8080
 ```
 
-Works best in Chrome / Edge / any Chromium browser (uses `canvas.captureStream` + `MediaRecorder` for video export).
+The `.dmg` is built by GitHub Actions on a macOS runner (`.github/workflows/release.yml`) and published to Releases on every push.
 
-## Features
-
-**Layers** — text, solids, shapes (rect / ellipse / polygon / star), images, video, and adjustment layers that apply their effects to everything beneath them.
-
-**Keyframe animation** — every transform property (position, scale, rotation, opacity, anchor point) is animatable. Click the stopwatch to enable animation; change a value and a keyframe drops at the playhead automatically. Per-keyframe easing: Linear, Ease In, Ease Out, Easy Ease, Hold (right-click a keyframe).
-
-**Timeline** — scrubbing ruler, draggable layer bars with trim handles, expandable property tracks, draggable keyframes, keyframe navigators (◀ ◆ ▶), drag-to-reorder layers, frame-snapping everywhere, ctrl+wheel zoom.
-
-**Viewport** — direct manipulation with transform gizmos: drag to move, corner handles to scale (Shift for non-uniform), rotation handle, anchor point indicator. Wheel to zoom, Alt-drag / middle-drag to pan.
-
-**Effects** — Gaussian Blur, Brightness, Contrast, Saturation, Hue Rotate, Invert, Sepia, Drop Shadow. Stack as many as you like per layer; toggle or remove any of them.
-
-**Compositing** — 17 blend modes (Multiply, Screen, Overlay, Add, Difference, …) and per-layer opacity.
-
-**Export** — WebM video (VP9/VP8) rendered at full composition resolution, or PNG of the current frame.
-
-**Projects** — save / load as `.lumen` files (JSON; imported images are embedded).
-
-**Workflow** — full undo/redo, ⌘K command palette, drag-and-drop media import, layer splitting at the playhead, duplication, renaming, lock & solo visibility.
-
-## Keyboard shortcuts
-
-| Key | Action |
-| --- | --- |
-| `Space` | Play / pause |
-| `← / →` | Step one frame (`Shift` = 10) |
-| `Home / End` | Jump to start / end |
-| `⌘K` | Command palette |
-| `⌘Z / ⇧⌘Z` | Undo / redo |
-| `⌘D` | Duplicate layer |
-| `⌘S / ⌘O` | Save / open project |
-| `Delete` | Delete selected layer |
-| `Esc` | Deselect / close overlays |
-
-## Architecture
+## Layout
 
 ```
-index.html        app shell
-styles.css        Linear-inspired dark theme
-js/core.js        data model, keyframe interpolation, cubic-bezier easing, undo history
-js/renderer.js    canvas compositor: transforms, blend modes, CSS-filter effects, hit testing
-js/timeline.js    timeline panel: ruler, bars, keyframes, reordering
-js/viewport.js    comp view: pan/zoom, selection gizmos, direct manipulation
-js/panels.js      project & properties panels, scrubbable inputs
-js/app.js         playback engine, shortcuts, command palette, exporters
+main.js            Electron main process
+src/index.html     UI
+src/app.js         app logic, rendering, 3D view, stats
+src/solver-gpu.js  WebGL2 lattice Boltzmann solver
+src/solver.js      CPU version of the same solver (fallback)
+src/geometry.js    mesh volume/area, slicing, rasterising onto the grid
+src/shapes.js      built-in models (the turtle lives here)
+scripts/vendor.js  copies three.js into src/vendor
 ```
-
-The renderer evaluates every animated property at time *t* (binary keyframe segments + cubic-bezier easing), draws each layer into an offscreen buffer with its transform, then composites with opacity, blend mode and filter stack. Adjustment layers snapshot the frame below and re-draw it filtered. Export replays the composition in real time into a `MediaRecorder` attached to an offscreen full-resolution canvas.
-
-## Notes
-
-- Video layers are best-effort: frames are seeked on scrub and played through during playback. Video sources are not embedded in saved project files (images are).
-- Effects use canvas 2D filters, so rendering is GPU-accelerated where the browser supports it.

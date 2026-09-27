@@ -1,0 +1,1255 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { LBM } from './solver.js';
+import { GpuLBM } from './solver-gpu.js';
+import * as G from './geometry.js';
+import { SHAPES } from './shapes.js';
+
+const $ = (id) => document.getElementById(id);
+const GRAV = 9.81;
+const RES = [
+  [320, 160],
+  [480, 240],
+  [640, 320],
+  [960, 480],
+];
+const MEDIA = {
+  air: { rho: 1.204, nu: 1.516e-5, max: 80, speed: 10 },
+  fresh: { rho: 998.2, nu: 1.004e-6, max: 8, speed: 1 },
+  sea: { rho: 1025, nu: 1.05e-6, max: 8, speed: 1 },
+};
+
+const state = {
+  shape: 'turtle',
+  modelName: 'Turtle',
+  rawSoup: null, // imported, before up-axis fix
+  rawExt: '',
+  soup: null, // normalised, x-length 1
+  colors: null,
+  R: 0.6,
+  unitVolume: 0,
+  unitSurface: 0,
+  length: 0.35,
+  mass: 1.6,
+  medium: 'air',
+  rho: MEDIA.air.rho,
+  nu: MEDIA.air.nu,
+  speed: 10,
+  speedMax: 80,
+  pitch: 0,
+  yaw: 0,
+  roll: 0,
+  flip: false,
+  view: 'side',
+  slice: 'silhouette',
+  slicePos: 0,
+  res: 1,
+  spf: 16,
+  cs: 0.16,
+  field: 'speed',
+  tracers: true,
+  arrows: false,
+  running: true,
+};
+
+// Geometry-derived numbers for the current orientation.
+const body = {
+  scale: 1, // cells per model unit
+  ox: 0,
+  oy: 0,
+  signB: 1,
+  href: 0, // projected height of the slice, cells
+  chord: 1, // body length, cells
+  frontal: 0, // model units^2
+  planform: 0,
+  side: 0,
+  sliceValue: 0,
+  sliceHalf: 0.5,
+};
+
+let solver = null;
+let useGpu = true;
+const hist = { cd: [], cl: [], step: [] };
+const HIST_MAX = 900;
+let crossings = [];
+let lastClSign = 0;
+
+// ---------------------------------------------------------------- solver --
+function makeSolver() {
+  const [nx, ny] = RES[state.res];
+  solver = null;
+  if (useGpu) {
+    try {
+      solver = new GpuLBM(nx, ny);
+    } catch (e) {
+      console.warn('GPU solver unavailable, falling back to CPU:', e);
+      useGpu = false;
+      toast('GPU solver unavailable, using CPU (slower)');
+    }
+  }
+  if (!solver) solver = new LBM(nx, ny);
+  solver.cs = state.cs;
+  $('st-engine').textContent = `${solver.kind} solver · ${nx}×${ny}`;
+  initTracers();
+  dye = new Float32Array(nx * ny);
+  dye2 = new Float32Array(nx * ny);
+  image = new ImageData(nx, ny);
+  fieldCanvas.width = nx;
+  fieldCanvas.height = ny;
+  texCanvas.width = nx * 2;
+  texCanvas.height = ny * 2;
+  // A canvas texture can't change size after upload, so make a fresh one.
+  sliceTex.dispose();
+  sliceTex = new THREE.CanvasTexture(texCanvas);
+  sliceTex.colorSpace = THREE.SRGBColorSpace;
+  sliceMat.map = sliceTex;
+  sliceMat.needsUpdate = true;
+  rebuildBody();
+  resetStats();
+}
+
+function updatePhysics() {
+  if (!solver) return;
+  const u0 = state.speed > 0 ? 0.1 : 0;
+  solver.u0 = u0;
+  solver.cs = state.cs;
+  const re = realRe();
+  // Match the real Reynolds number if the lattice can take it; otherwise run
+  // at the lowest stable viscosity and let the LES model do the rest.
+  const nuLat = re > 0 ? (0.1 * body.chord) / re : 0.05;
+  solver.setViscosity(nuLat);
+}
+
+function realRe() {
+  return (state.speed * state.length) / state.nu;
+}
+
+function simRe() {
+  return (0.1 * body.chord) / solver.nu;
+}
+
+// ------------------------------------------------------------------ body --
+function setModel(soup, name, colors = null) {
+  state.soup = G.normalise(soup);
+  state.colors = colors;
+  state.modelName = name;
+  let R = 0;
+  for (let i = 0; i < state.soup.length; i += 3) {
+    const r = Math.hypot(state.soup[i], state.soup[i + 1], state.soup[i + 2]);
+    if (r > R) R = r;
+  }
+  state.R = R;
+  state.unitVolume = G.volume(state.soup);
+  state.unitSurface = G.surfaceArea(state.soup);
+  buildMesh();
+  rebuildBody();
+  resetStats();
+}
+
+function loadShape(key) {
+  const s = SHAPES[key];
+  const geo = s.build();
+  const mesh = new THREE.Mesh(geo);
+  const soup = G.soupFromObject(mesh, THREE);
+  const col = geo.attributes.color;
+  let colors = null;
+  if (col) {
+    const g2 = geo.index ? geo.toNonIndexed() : geo;
+    colors = new Float32Array(g2.attributes.color.array);
+  }
+  state.shape = key;
+  state.length = s.length;
+  state.mass = s.mass;
+  $('in-length').value = s.length;
+  $('in-mass').value = s.mass;
+  state.rawSoup = null;
+  setModel(soup, s.label, colors);
+}
+
+function orientImported() {
+  let soup = state.rawSoup;
+  const up = $('in-up').value;
+  const zUp = up === 'z' || (up === 'auto' && (state.rawExt === 'stl' || state.rawExt === 'ply'));
+  if (zUp) soup = G.transform(soup, [1, 0, 0, 0, 0, 1, 0, -1, 0]); // Z-up -> Y-up
+  const b = G.bounds(soup);
+  if (b.size[2] > b.size[0] * 1.15) soup = G.transform(soup, [0, 0, 1, 0, 1, 0, -1, 0, 0]); // long axis -> X
+  return soup;
+}
+
+let rebuildQueued = false;
+function queueRebuild() {
+  if (rebuildQueued) return;
+  rebuildQueued = true;
+  requestAnimationFrame(() => {
+    rebuildQueued = false;
+    rebuildBody();
+  });
+}
+
+function rotation() {
+  return G.rotationMatrix(state.roll, state.yaw + (state.flip ? 180 : 0), state.pitch);
+}
+
+function rebuildBody() {
+  if (!solver || !state.soup) return;
+  const { nx, ny } = solver;
+  const M = rotation();
+  const rot = G.transform(state.soup, M);
+
+  body.scale = Math.min(nx * 0.16, (ny * 0.3) / Math.max(0.5, state.R));
+  body.chord = body.scale;
+  body.ox = nx * 0.3;
+  body.oy = ny / 2 + 0.37; // off-centre by a hair so symmetric bodies still start shedding
+  const side = state.view === 'side';
+  const ia = 0;
+  const ib = side ? 1 : 2;
+  const ic = side ? 2 : 1;
+  body.signB = side ? 1 : -1;
+
+  const b = G.bounds(rot);
+  body.sliceHalf = Math.max(Math.abs(b.min[ic]), Math.abs(b.max[ic]));
+  body.sliceValue = state.slicePos * body.sliceHalf * 0.98;
+
+  const mask =
+    state.slice === 'section'
+      ? G.rasterSection(rot, ia, ib, ic, body.sliceValue, nx, ny, body.ox, body.oy, body.scale, body.signB)
+      : G.rasterSilhouette(rot, ia, ib, nx, ny, body.ox, body.oy, body.scale, body.signB);
+  // Keep the far-field rows and inlet/outlet columns clear.
+  for (let x = 0; x < nx; x++) {
+    mask[x] = mask[nx + x] = mask[(ny - 1) * nx + x] = mask[(ny - 2) * nx + x] = 0;
+  }
+  for (let y = 0; y < ny; y++) mask[y * nx] = mask[y * nx + 1] = mask[y * nx + nx - 1] = mask[y * nx + nx - 2] = 0;
+
+  solver.setSolid(mask);
+  const ext = G.maskExtent(mask, nx, ny);
+  body.href = ext.h;
+
+  body.frontal = G.projectedArea(rot, 0);
+  body.planform = G.projectedArea(rot, 1);
+  body.side = G.projectedArea(rot, 2);
+
+  updatePhysics();
+  update3D(M);
+  $('cl-key').innerHTML = side ? 'C<sub>l</sub> (lift)' : 'C<sub>s</sub> (side force)';
+  $('out-slicepos').textContent =
+    state.slice === 'section' ? `${(body.sliceValue * state.length * 100).toFixed(1)} cm` : 'n/a';
+}
+
+// ------------------------------------------------------------- rendering --
+const flowCanvas = $('flow');
+const fctx = flowCanvas.getContext('2d');
+const fieldCanvas = document.createElement('canvas');
+const fieldCtx = fieldCanvas.getContext('2d');
+const texCanvas = document.createElement('canvas');
+const texCtx = texCanvas.getContext('2d');
+let image = null;
+let dye = null;
+let dye2 = null;
+
+function lut(stops) {
+  const out = new Uint8ClampedArray(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255;
+    let j = 0;
+    while (j < stops.length - 2 && t > stops[j + 1][0]) j++;
+    const [t0, c0] = stops[j];
+    const [t1, c1] = stops[j + 1];
+    const u = Math.min(1, Math.max(0, (t - t0) / (t1 - t0 || 1)));
+    for (let c = 0; c < 3; c++) out[i * 3 + c] = c0[c] + (c1[c] - c0[c]) * u;
+  }
+  return out;
+}
+const hex = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+const LUT = {
+  speed: lut([
+    [0, hex('#0b1026')],
+    [0.2, hex('#1d3a8a')],
+    [0.4, hex('#1f8fb0')],
+    [0.6, hex('#36c3a4')],
+    [0.75, hex('#c9e05a')],
+    [0.88, hex('#f2a33a')],
+    [1, hex('#e8453c')],
+  ]),
+  diverge: lut([
+    [0, hex('#3b6fe0')],
+    [0.3, hex('#1c2c55')],
+    [0.5, hex('#0e121a')],
+    [0.7, hex('#5c2020')],
+    [1, hex('#f0643c')],
+  ]),
+  pressure: lut([
+    [0, hex('#2d5bd6')],
+    [0.4, hex('#7fb2f0')],
+    [0.6667, hex('#f1f1ef')],
+    [0.85, hex('#f29a4a')],
+    [1, hex('#d93a2b')],
+  ]),
+};
+const SOLID = [74, 84, 102];
+
+function renderField() {
+  const { nx, ny, ux, uy, rho, solid } = solver;
+  const d = image.data;
+  const u0 = 0.1;
+  const mode = state.field;
+  for (let y = 0; y < ny; y++) {
+    const row = (ny - 1 - y) * nx;
+    for (let x = 0; x < nx; x++) {
+      const k = y * nx + x;
+      const p = (row + x) * 4;
+      if (solid[k]) {
+        d[p] = SOLID[0];
+        d[p + 1] = SOLID[1];
+        d[p + 2] = SOLID[2];
+        d[p + 3] = 255;
+        continue;
+      }
+      let li, L;
+      if (mode === 'speed') {
+        const s = Math.hypot(ux[k], uy[k]) / u0;
+        li = Math.min(255, (s / 1.6) * 255) | 0;
+        L = LUT.speed;
+      } else if (mode === 'pressure') {
+        const cp = (rho[k] - 1) / 3 / (0.5 * u0 * u0);
+        li = Math.min(255, Math.max(0, ((cp + 2) / 3) * 255)) | 0;
+        L = LUT.pressure;
+      } else if (mode === 'vorticity') {
+        const w = vort(k, x, y);
+        li = (127.5 + 127.5 * Math.tanh((w / u0) * 6)) | 0;
+        L = LUT.diverge;
+      } else {
+        const s = Math.hypot(ux[k], uy[k]) / u0;
+        const dv = Math.min(1, dye[k]);
+        d[p] = 12 + dv * 230 + s * 10;
+        d[p + 1] = 16 + dv * 225 + s * 20;
+        d[p + 2] = 26 + dv * 215 + s * 40;
+        d[p + 3] = 255;
+        continue;
+      }
+      d[p] = L[li * 3];
+      d[p + 1] = L[li * 3 + 1];
+      d[p + 2] = L[li * 3 + 2];
+      d[p + 3] = 255;
+    }
+  }
+  fieldCtx.putImageData(image, 0, 0);
+}
+
+function vort(k, x, y) {
+  const { nx, ny, ux, uy } = solver;
+  if (x < 1 || y < 1 || x >= nx - 1 || y >= ny - 1) return 0;
+  return (uy[k + 1] - uy[k - 1] - ux[k + nx] + ux[k - nx]) / 2;
+}
+
+function advectDye(steps) {
+  const { nx, ny, ux, uy, solid } = solver;
+  const src = dye;
+  const out = dye2;
+  for (let y = 1; y < ny - 1; y++) {
+    for (let x = 2; x < nx - 1; x++) {
+      const k = y * nx + x;
+      if (solid[k]) {
+        out[k] = 0;
+        continue;
+      }
+      let px = x - ux[k] * steps;
+      let py = y - uy[k] * steps;
+      if (px < 0) px = 0;
+      if (py < 0) py = 0;
+      if (px > nx - 1.001) px = nx - 1.001;
+      if (py > ny - 1.001) py = ny - 1.001;
+      const x0 = px | 0, y0 = py | 0, tx = px - x0, ty = py - y0;
+      const j = y0 * nx + x0;
+      out[k] =
+        0.999 *
+        (src[j] * (1 - tx) * (1 - ty) + src[j + 1] * tx * (1 - ty) + src[j + nx] * (1 - tx) * ty + src[j + nx + 1] * tx * ty);
+    }
+  }
+  const period = Math.max(8, Math.round(ny / 14));
+  const width = Math.max(2, Math.round(period / 4));
+  for (let y = 0; y < ny; y++) {
+    const on = y % period < width ? 1 : 0;
+    out[y * nx] = out[y * nx + 1] = on;
+  }
+  dye = out;
+  dye2 = src;
+}
+
+// Tracer particles
+let tracers = null;
+function initTracers() {
+  const [nx, ny] = RES[state.res];
+  const count = Math.round((nx * ny) / 40);
+  tracers = { x: new Float32Array(count), y: new Float32Array(count), px: new Float32Array(count), py: new Float32Array(count), age: new Float32Array(count) };
+  for (let i = 0; i < count; i++) respawn(i, true, nx, ny);
+}
+function respawn(i, anywhere, nx, ny) {
+  tracers.x[i] = anywhere ? Math.random() * nx : Math.random() * 3;
+  tracers.y[i] = 1 + Math.random() * (ny - 2);
+  tracers.px[i] = tracers.x[i];
+  tracers.py[i] = tracers.y[i];
+  tracers.age[i] = Math.random() * 200;
+}
+function moveTracers(steps) {
+  const { nx, ny, solid } = solver;
+  const t = tracers;
+  for (let i = 0; i < t.x.length; i++) {
+    const [u, v] = solver.sample(t.x[i], t.y[i]);
+    t.px[i] = t.x[i];
+    t.py[i] = t.y[i];
+    t.x[i] += u * steps;
+    t.y[i] += v * steps;
+    t.age[i] += 1;
+    const gx = t.x[i] | 0, gy = t.y[i] | 0;
+    if (t.x[i] >= nx - 2 || t.y[i] < 1 || t.y[i] >= ny - 1 || solid[gy * nx + gx] || t.age[i] > 1200) {
+      respawn(i, false, nx, ny);
+      t.age[i] = 0;
+    }
+  }
+}
+
+function view() {
+  const dpr = window.devicePixelRatio || 1;
+  const cw = flowCanvas.clientWidth * dpr;
+  const ch = flowCanvas.clientHeight * dpr;
+  if (flowCanvas.width !== cw || flowCanvas.height !== ch) {
+    flowCanvas.width = cw;
+    flowCanvas.height = ch;
+  }
+  const s = Math.min(cw / solver.nx, ch / solver.ny);
+  return { s, ox: (cw - solver.nx * s) / 2, oy: (ch - solver.ny * s) / 2, dpr };
+}
+
+function drawFlow() {
+  const v = view();
+  const { nx, ny } = solver;
+  fctx.fillStyle = '#0b0e14';
+  fctx.fillRect(0, 0, flowCanvas.width, flowCanvas.height);
+  fctx.imageSmoothingEnabled = true;
+  fctx.imageSmoothingQuality = 'high';
+  fctx.drawImage(fieldCanvas, v.ox, v.oy, nx * v.s, ny * v.s);
+
+  if (state.tracers) drawTracers(fctx, v.ox, v.oy, v.s, ny, v.dpr);
+  if (state.arrows) drawArrows(fctx, v);
+}
+
+function drawTracers(ctx, ox, oy, s, ny, dpr) {
+  const t = tracers;
+  ctx.strokeStyle = state.field === 'smoke' ? 'rgba(120,200,255,0.55)' : 'rgba(255,255,255,0.6)';
+  ctx.lineWidth = Math.max(1, 1.1 * dpr);
+  ctx.beginPath();
+  for (let i = 0; i < t.x.length; i++) {
+    if (t.age[i] < 2) continue;
+    const x1 = ox + t.x[i] * s, y1 = oy + (ny - t.y[i]) * s;
+    let x0 = ox + t.px[i] * s, y0 = oy + (ny - t.py[i]) * s;
+    // stretch streaks a bit so motion reads at a glance
+    x0 = x1 + (x0 - x1) * 2.5;
+    y0 = y1 + (y0 - y1) * 2.5;
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1 + 0.01, y1);
+  }
+  ctx.stroke();
+}
+
+function drawArrows(ctx, v) {
+  const { nx, ny, solid } = solver;
+  const stepC = Math.max(8, Math.round(nx / 40));
+  ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+  ctx.lineWidth = v.dpr;
+  ctx.beginPath();
+  for (let y = stepC / 2; y < ny; y += stepC) {
+    for (let x = stepC / 2; x < nx; x += stepC) {
+      const k = (y | 0) * nx + (x | 0);
+      if (solid[k]) continue;
+      const [u, w] = solver.sample(x, y);
+      const len = (stepC * 0.9 * Math.hypot(u, w)) / 0.1;
+      const a = Math.atan2(-w, u);
+      const sx = v.ox + x * v.s, sy = v.oy + (ny - y) * v.s;
+      const L = (len * v.s) / 1;
+      const ex = sx + Math.cos(a) * L, ey = sy + Math.sin(a) * L;
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(ex, ey);
+      const h = Math.min(6 * v.dpr, L * 0.35);
+      ctx.moveTo(ex, ey);
+      ctx.lineTo(ex - Math.cos(a - 0.45) * h, ey - Math.sin(a - 0.45) * h);
+      ctx.moveTo(ex, ey);
+      ctx.lineTo(ex - Math.cos(a + 0.45) * h, ey - Math.sin(a + 0.45) * h);
+    }
+  }
+  ctx.stroke();
+}
+
+function drawTexture() {
+  const { nx, ny } = solver;
+  texCtx.imageSmoothingEnabled = true;
+  texCtx.drawImage(fieldCanvas, 0, 0, texCanvas.width, texCanvas.height);
+  if (state.tracers) drawTracers(texCtx, 0, 0, 2, ny, 1);
+  sliceTex.needsUpdate = true;
+}
+
+function updateLegend() {
+  const q = 0.5 * state.rho * state.speed * state.speed;
+  let html = '';
+  const bar = (L) => {
+    const stops = [];
+    for (let i = 0; i <= 8; i++) {
+      const j = Math.round((i / 8) * 255) * 3;
+      stops.push(`rgb(${L[j]},${L[j + 1]},${L[j + 2]}) ${(i / 8) * 100}%`);
+    }
+    return `<div class="bar" style="background:linear-gradient(90deg,${stops.join(',')})"></div>`;
+  };
+  if (state.field === 'speed') {
+    html = `Flow speed${bar(LUT.speed)}<div class="ends"><span>0</span><span>${fmtNum(state.speed * 0.8)}</span><span>${fmtNum(state.speed * 1.6)} m/s</span></div>`;
+  } else if (state.field === 'pressure') {
+    html = `Pressure (vs. free stream)${bar(LUT.pressure)}<div class="ends"><span>${fmtNum(-2 * q)}</span><span>0</span><span>+${fmtNum(q)} Pa</span></div>`;
+  } else if (state.field === 'vorticity') {
+    html = `Vorticity (spin)${bar(LUT.diverge)}<div class="ends"><span>clockwise</span><span>counter-clockwise</span></div>`;
+  } else {
+    html = 'Smoke streaks injected at the inlet';
+  }
+  $('legend').innerHTML = html;
+}
+
+// -------------------------------------------------------------------- 3D --
+const v3 = $('view3d');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(window.devicePixelRatio || 1);
+renderer.setClearColor(0x0f131b);
+v3.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 100);
+camera.position.set(-1.1, 1.1, 2.6);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.target.set(0.35, 0, 0);
+scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x20242c, 1.4));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+sun.position.set(-2, 3, 2);
+scene.add(sun);
+const grid = new THREE.GridHelper(4, 20, 0x2a3345, 0x1a2130);
+grid.position.y = -0.6;
+scene.add(grid);
+
+const modelMat = new THREE.MeshStandardMaterial({ color: 0xc8d2e0, roughness: 0.55, metalness: 0.05, vertexColors: false });
+let modelMesh = null;
+let sliceTex = new THREE.CanvasTexture(texCanvas);
+sliceTex.colorSpace = THREE.SRGBColorSpace;
+const sliceMat = new THREE.MeshBasicMaterial({ map: sliceTex, transparent: true, opacity: 0.88, side: THREE.DoubleSide, depthWrite: false });
+const slicePlane = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), sliceMat);
+scene.add(slicePlane);
+const windArrows = new THREE.Group();
+scene.add(windArrows);
+for (let i = 0; i < 5; i++) {
+  const a = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1.5, -0.3 + i * 0.15, 0.7), 0.35, 0x36c3a4, 0.08, 0.05);
+  windArrows.add(a);
+}
+
+function buildMesh() {
+  if (modelMesh) {
+    scene.remove(modelMesh);
+    modelMesh.geometry.dispose();
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(state.soup, 3));
+  if (state.colors && state.colors.length === state.soup.length) {
+    geo.setAttribute('color', new THREE.BufferAttribute(state.colors, 3));
+    modelMat.vertexColors = true;
+    modelMat.color.set(0xffffff);
+  } else {
+    modelMat.vertexColors = false;
+    modelMat.color.set(0xc8d2e0);
+  }
+  modelMat.needsUpdate = true;
+  geo.computeVertexNormals();
+  modelMesh = new THREE.Mesh(geo, modelMat);
+  scene.add(modelMesh);
+}
+
+function update3D(M) {
+  if (!modelMesh) return;
+  const m4 = new THREE.Matrix4().set(M[0], M[1], M[2], 0, M[3], M[4], M[5], 0, M[6], M[7], M[8], 0, 0, 0, 0, 1);
+  modelMesh.matrixAutoUpdate = false;
+  modelMesh.matrix.copy(m4);
+  modelMesh.matrixWorldNeedsUpdate = true;
+
+  // Show only the part of the slice around the body; the full tunnel is huge.
+  const { nx, ny } = solver;
+  const sc = body.scale;
+  const gx0 = Math.max(0, body.ox - 1.3 * sc), gx1 = Math.min(nx, body.ox + 2.7 * sc);
+  const gy0 = Math.max(0, body.oy - 1.0 * sc), gy1 = Math.min(ny, body.oy + 1.0 * sc);
+  sliceTex.repeat.set((gx1 - gx0) / nx, (gy1 - gy0) / ny);
+  sliceTex.offset.set(gx0 / nx, gy0 / ny);
+  const cx = ((gx0 + gx1) / 2 - body.ox) / sc;
+  const cb = ((gy0 + gy1) / 2 - body.oy) / sc;
+  slicePlane.scale.set((gx1 - gx0) / sc, (gy1 - gy0) / sc, 1);
+  const depth = state.slice === 'section' ? body.sliceValue : 0;
+  if (state.view === 'side') {
+    slicePlane.rotation.set(0, 0, 0);
+    slicePlane.position.set(cx, cb, depth);
+  } else {
+    slicePlane.rotation.set(-Math.PI / 2, 0, 0);
+    slicePlane.position.set(cx, depth, -cb);
+  }
+  const bb = new THREE.Box3().setFromObject(modelMesh);
+  grid.position.y = bb.min.y - 0.05;
+}
+
+function resize3D() {
+  const w = v3.clientWidth, h = v3.clientHeight;
+  if (!w || !h) return;
+  renderer.setSize(w, h, false);
+  renderer.domElement.style.width = w + 'px';
+  renderer.domElement.style.height = h + 'px';
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize3D).observe(v3);
+
+// ----------------------------------------------------------------- stats --
+function resetStats() {
+  hist.cd.length = 0;
+  hist.cl.length = 0;
+  hist.step.length = 0;
+  crossings = [];
+  lastClSign = 0;
+}
+
+function coeffs() {
+  const u0 = 0.1;
+  const q = 0.5 * u0 * u0;
+  const cd = body.href > 0 ? solver.fx / (q * body.href) : 0;
+  const cl = solver.fy / (q * body.chord);
+  return { cd, cl };
+}
+
+function recordStats() {
+  if (solver.steps < solver.rampSteps * 2 || state.speed <= 0) return;
+  const { cd, cl } = coeffs();
+  hist.cd.push(cd);
+  hist.cl.push(cl);
+  hist.step.push(solver.steps);
+  if (hist.cd.length > HIST_MAX) {
+    hist.cd.shift();
+    hist.cl.shift();
+    hist.step.shift();
+  }
+  // Vortex shedding: count low->high swings of the lift signal, with
+  // hysteresis so solver jitter doesn't register as a period.
+  const n = Math.min(hist.cl.length, 120);
+  if (n > 20) {
+    let mean = 0, sq = 0;
+    for (let i = hist.cl.length - n; i < hist.cl.length; i++) {
+      mean += hist.cl[i];
+      sq += hist.cl[i] * hist.cl[i];
+    }
+    mean /= n;
+    const h = 0.5 * Math.sqrt(Math.max(0, sq / n - mean * mean));
+    const smooth = (hist.cl[hist.cl.length - 1] + hist.cl[hist.cl.length - 2]) / 2;
+    if (smooth > mean + h) {
+      if (lastClSign < 0) {
+        crossings.push(solver.steps);
+        if (crossings.length > 8) crossings.shift();
+      }
+      lastClSign = 1;
+    } else if (smooth < mean - h) {
+      lastClSign = -1;
+    }
+  }
+}
+
+function averaged(arr, n = 240) {
+  const m = Math.min(arr.length, n);
+  if (!m) return { mean: NaN, amp: 0 };
+  let s = 0, lo = Infinity, hi = -Infinity;
+  for (let i = arr.length - m; i < arr.length; i++) {
+    s += arr[i];
+    lo = Math.min(lo, arr[i]);
+    hi = Math.max(hi, arr[i]);
+  }
+  return { mean: s / m, amp: (hi - lo) / 2 };
+}
+
+function results() {
+  const U = state.speed;
+  const L = state.length;
+  const rho = state.rho;
+  const q = 0.5 * rho * U * U;
+  const cd = averaged(hist.cd);
+  const cl = averaged(hist.cl);
+  const A = body.frontal * L * L;
+  const Aplan = (state.view === 'side' ? body.planform : body.side) * L * L;
+  const drag = Number.isFinite(cd.mean) ? cd.mean * q * A : NaN;
+  const lift = Number.isFinite(cl.mean) ? cl.mean * q * Aplan : NaN;
+  const dx = L / body.chord;
+  const dt = U > 0 ? (dx * 0.1) / U : 0;
+
+  let st = NaN, freq = NaN;
+  if (crossings.length >= 4 && cl.amp > 0.02) {
+    const period = (crossings[crossings.length - 1] - crossings[0]) / (crossings.length - 1);
+    if (period > 20) {
+      const fLat = 1 / period;
+      st = (fLat * body.href) / 0.1;
+      freq = fLat / dt;
+    }
+  }
+
+  const V = state.unitVolume * L * L * L;
+  const Fb = rho * V * GRAV;
+  const Wt = state.mass * GRAV;
+  const bodyDensity = V > 0 ? state.mass / V : NaN;
+  return { U, L, rho, q, cd, cl, A, Aplan, drag, lift, st, freq, V, Fb, Wt, bodyDensity, dt };
+}
+
+// ------------------------------------------------------------ formatting --
+function fmtNum(v, digits = 3) {
+  if (!Number.isFinite(v)) return '—';
+  const a = Math.abs(v);
+  if (a === 0) return '0';
+  if (a >= 1e5 || a < 1e-3) return v.toExponential(2);
+  return Number(v.toPrecision(digits)).toLocaleString('en-US', { maximumFractionDigits: 6 });
+}
+function fmtSI(v, unit) {
+  if (!Number.isFinite(v)) return '—';
+  const a = Math.abs(v);
+  const pre = [
+    [1e6, 'M'],
+    [1e3, 'k'],
+    [1, ''],
+    [1e-3, 'm'],
+    [1e-6, 'µ'],
+  ];
+  if (a === 0) return `0 ${unit}`;
+  for (const [f, p] of pre) if (a >= f) return `${fmtNum(v / f)} ${p}${unit}`;
+  return `${v.toExponential(2)} ${unit}`;
+}
+function fmtArea(v) {
+  if (!Number.isFinite(v)) return '—';
+  return v >= 0.1 ? `${fmtNum(v)} m²` : `${fmtNum(v * 1e4)} cm²`;
+}
+function fmtVol(v) {
+  if (!Number.isFinite(v)) return '—';
+  return v >= 0.1 ? `${fmtNum(v)} m³` : `${fmtNum(v * 1000)} L`;
+}
+function rows(list) {
+  return list
+    .map(([k, v, cls = '', sub = '']) => `<div class="k">${k}</div><div class="v ${cls}">${v}</div>${sub ? `<div class="sub">${sub}</div>` : ''}`)
+    .join('');
+}
+
+function updatePanels() {
+  const r = results();
+  const side = state.view === 'side';
+  const liftName = side ? 'Lift' : 'Side force';
+  $('m-forces').innerHTML = rows([
+    ['Drag coefficient C<sub>d</sub>', fmtNum(r.cd.mean), 'big'],
+    [`${liftName} coeff. C<sub>${side ? 'l' : 's'}</sub>`, fmtNum(r.cl.mean), 'big'],
+    ['Drag force', fmtSI(r.drag, 'N')],
+    [`${liftName}`, fmtSI(r.lift, 'N'), '', side ? 'positive = up' : 'positive = toward top of slice'],
+    [side ? 'Lift / drag' : 'Side force / drag', fmtNum(r.lift / r.drag)],
+    ['Power to hold position', fmtSI(r.drag * r.U, 'W')],
+    [`Unsteadiness (C<sub>${side ? 'l' : 's'}</sub> swing)`, `± ${fmtNum(r.cl.amp)}`],
+  ]);
+  const re = realRe();
+  const sre = simRe();
+  $('m-flow').innerHTML = rows([
+    ['Reynolds number', fmtNum(re), '', re > 5e5 ? 'turbulent boundary layer likely' : re > 2e3 ? 'transitional / turbulent wake' : 'laminar-ish'],
+    ['Simulated Re (slice)', fmtNum(sre), sre < re * 0.5 ? 'warn' : '', sre < re * 0.5 ? 'lattice caps Re; LES models the rest' : ''],
+    ['Dynamic pressure', fmtSI(r.q, 'Pa')],
+    ['Vortex shedding', Number.isFinite(r.freq) ? `${fmtNum(r.freq)} Hz` : '—'],
+    ['Strouhal number', fmtNum(r.st)],
+    ['Sim time', `${fmtNum(solver.steps * r.dt)} s`],
+  ]);
+
+  const med = state.medium === 'air' ? 'air' : state.medium === 'custom' ? 'this fluid' : state.medium === 'sea' ? 'sea water' : 'fresh water';
+  const vd = $('verdict');
+  const ratio = r.bodyDensity / r.rho;
+  if (!Number.isFinite(ratio)) {
+    vd.className = 'verdict';
+    vd.textContent = 'Volume unknown (mesh not closed?)';
+  } else if (ratio < 0.98) {
+    vd.className = 'verdict floats';
+    vd.textContent = `Floats in ${med} · ${fmtNum(Math.min(100, ratio * 100), 3)}% submerged`;
+  } else if (ratio > 1.02) {
+    vd.className = 'verdict sinks';
+    vd.textContent = `Sinks in ${med}`;
+  } else {
+    vd.className = 'verdict neutral';
+    vd.textContent = `About neutrally buoyant in ${med}`;
+  }
+  const net = r.Fb - r.Wt;
+  // Terminal speed rising / sinking, belly-first, using a flat-body Cd of ~1.
+  const vt = Math.sqrt((2 * Math.abs(net)) / (r.rho * 1.0 * (body.planform * r.L * r.L || 1)));
+  $('m-buoy').innerHTML = rows([
+    ['Buoyant force', fmtSI(r.Fb, 'N')],
+    ['Weight', fmtSI(r.Wt, 'N')],
+    ['Net (up +)', fmtSI(net, 'N')],
+    ['Body density', `${fmtNum(r.bodyDensity)} kg/m³`],
+    ['Mass for neutral buoyancy', `${fmtNum(r.rho * r.V)} kg`],
+    [net < 0 ? 'Sinking speed (est.)' : 'Rising speed (est.)', `${fmtNum(vt)} m/s`, '', 'belly-first, C<sub>d</sub> ≈ 1'],
+    ['In fresh water', verdictShort(r.bodyDensity / MEDIA.fresh.rho)],
+    ['In sea water', verdictShort(r.bodyDensity / MEDIA.sea.rho)],
+  ]);
+  $('m-body').innerHTML = rows([
+    ['Model', state.modelName],
+    ['Length', `${fmtNum(r.L)} m`],
+    ['Frontal area', fmtArea(r.A)],
+    ['Planform (top) area', fmtArea(body.planform * r.L * r.L)],
+    ['Wetted surface', fmtArea(state.unitSurface * r.L * r.L)],
+    ['Volume', fmtVol(r.V)],
+    ['Slice height', `${body.href} cells`],
+  ]);
+  $('st-steps').textContent = `${solver.steps.toLocaleString()} steps`;
+}
+
+function verdictShort(ratio) {
+  if (!Number.isFinite(ratio)) return '—';
+  if (ratio < 0.98) return `floats (${fmtNum(ratio * 100, 3)}% under)`;
+  if (ratio > 1.02) return 'sinks';
+  return 'neutral';
+}
+
+// ----------------------------------------------------------------- chart --
+const chart = $('chart');
+const cctx = chart.getContext('2d');
+function drawChart() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = chart.clientWidth * dpr, h = chart.clientHeight * dpr;
+  if (chart.width !== w || chart.height !== h) {
+    chart.width = w;
+    chart.height = h;
+  }
+  cctx.clearRect(0, 0, w, h);
+  const pad = { l: 44 * dpr, r: 10 * dpr, t: 10 * dpr, b: 22 * dpr };
+  const n = hist.cd.length;
+  cctx.font = `${11 * dpr}px -apple-system, system-ui, sans-serif`;
+  cctx.fillStyle = '#8592a6';
+  if (n < 2) {
+    cctx.fillText(state.speed > 0 ? 'Waiting for the flow to develop…' : 'Flow speed is zero', pad.l, h / 2);
+    return;
+  }
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < n; i++) {
+    lo = Math.min(lo, hist.cd[i], hist.cl[i]);
+    hi = Math.max(hi, hist.cd[i], hist.cl[i]);
+  }
+  lo = Math.min(lo, 0);
+  const span = hi - lo || 1;
+  lo -= span * 0.08;
+  hi += span * 0.08;
+  const X = (i) => pad.l + (i / (HIST_MAX - 1)) * (w - pad.l - pad.r);
+  const Y = (v) => pad.t + (1 - (v - lo) / (hi - lo)) * (h - pad.t - pad.b);
+
+  cctx.strokeStyle = '#222a37';
+  cctx.lineWidth = dpr;
+  const ticks = 5;
+  for (let i = 0; i <= ticks; i++) {
+    const v = lo + ((hi - lo) * i) / ticks;
+    const y = Y(v);
+    cctx.beginPath();
+    cctx.moveTo(pad.l, y);
+    cctx.lineTo(w - pad.r, y);
+    cctx.stroke();
+    cctx.fillText(v.toFixed(2), 6 * dpr, y + 4 * dpr);
+  }
+  cctx.strokeStyle = '#3a4456';
+  cctx.beginPath();
+  cctx.moveTo(pad.l, Y(0));
+  cctx.lineTo(w - pad.r, Y(0));
+  cctx.stroke();
+
+  const line = (arr, color) => {
+    cctx.strokeStyle = color;
+    cctx.lineWidth = 1.6 * dpr;
+    cctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const x = X(i), y = Y(arr[i]);
+      i ? cctx.lineTo(x, y) : cctx.moveTo(x, y);
+    }
+    cctx.stroke();
+  };
+  line(hist.cl, '#f2a33a');
+  line(hist.cd, '#36c3a4');
+  const dtReal = results().dt;
+  const secs = (hist.step[n - 1] - hist.step[0]) * dtReal;
+  cctx.fillStyle = '#8592a6';
+  cctx.fillText(`last ${fmtNum(secs)} s of flow`, pad.l, h - 6 * dpr);
+}
+
+// ------------------------------------------------------------------ loop --
+let frames = 0;
+let fpsT = performance.now();
+let frameNo = 0;
+function frame() {
+  requestAnimationFrame(frame);
+  frameNo++;
+  if (state.running && solver) {
+    solver.run(state.spf);
+    if (!solver.isFinite()) {
+      solver.reset();
+      state.cs = Math.min(0.3, state.cs + 0.04);
+      $('in-cs').value = state.cs;
+      $('out-cs').textContent = state.cs.toFixed(2);
+      solver.cs = state.cs;
+      toast('Flow blew up. Restarted with a stronger turbulence model.');
+    }
+    recordStats();
+    if (state.field === 'smoke') advectDye(state.spf);
+    if (state.tracers) moveTracers(state.spf);
+  }
+  if (solver) {
+    renderField();
+    drawFlow();
+    if (frameNo % 2 === 0) drawTexture();
+    if (frameNo % 6 === 0) {
+      updatePanels();
+      drawChart();
+    }
+  }
+  controls.update();
+  renderer.render(scene, camera);
+
+  frames++;
+  const now = performance.now();
+  if (now - fpsT > 1000) {
+    $('st-fps').textContent = `${Math.round((frames * 1000) / (now - fpsT))} fps`;
+    frames = 0;
+    fpsT = now;
+  }
+}
+
+// -------------------------------------------------------------------- UI --
+function toast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('on');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove('on'), 3200);
+}
+
+function seg(id, key, onChange) {
+  const el = $(id);
+  const sync = () => el.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === state[key]));
+  el.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    state[key] = b.dataset.v;
+    sync();
+    onChange?.(b.dataset.v);
+  });
+  sync();
+  return sync;
+}
+
+function speedFromSlider(t) {
+  return state.speedMax * t * t;
+}
+function sliderFromSpeed(s) {
+  return Math.sqrt(Math.min(1, s / state.speedMax));
+}
+function syncSpeed() {
+  $('in-speed').value = sliderFromSpeed(state.speed);
+  const kmh = state.speed * 3.6;
+  $('out-speed').textContent = `${fmtNum(state.speed)} m/s · ${fmtNum(kmh)} km/h`;
+}
+
+function setMedium(m) {
+  state.medium = m;
+  if (MEDIA[m]) {
+    const md = MEDIA[m];
+    const wasAir = state.speedMax === MEDIA.air.max;
+    state.rho = md.rho;
+    state.nu = md.nu;
+    state.speedMax = md.max;
+    if (wasAir !== (m === 'air')) state.speed = md.speed;
+  }
+  $('in-rho').value = state.rho;
+  $('in-nu').value = state.nu.toExponential(3);
+  syncMedium();
+  syncSpeed();
+  updatePhysics();
+  updateLegend();
+}
+let syncMedium = () => {};
+
+function bindSlider(id, key, fmt, onChange) {
+  const el = $(id);
+  const out = $(id.replace('in-', 'out-'));
+  el.value = state[key];
+  const show = () => out && (out.textContent = fmt(state[key]));
+  show();
+  el.addEventListener('input', () => {
+    state[key] = parseFloat(el.value);
+    show();
+    onChange?.();
+  });
+}
+
+async function importFile(file) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!['stl', 'obj', 'glb', 'gltf', 'ply'].includes(ext)) {
+    toast(`Can't read .${ext} files. Use STL, OBJ, GLB or PLY.`);
+    return;
+  }
+  toast(`Loading ${file.name}…`);
+  try {
+    const buf = await file.arrayBuffer();
+    let obj;
+    if (ext === 'stl') obj = new THREE.Mesh(new STLLoader().parse(buf));
+    else if (ext === 'ply') obj = new THREE.Mesh(new PLYLoader().parse(buf));
+    else if (ext === 'obj') obj = new OBJLoader().parse(new TextDecoder().decode(buf));
+    else obj = (await new GLTFLoader().parseAsync(buf, '')).scene;
+    const soup = G.soupFromObject(obj, THREE);
+    if (soup.length < 9) throw new Error('no triangles found');
+    state.rawSoup = soup;
+    state.rawExt = ext;
+    const name = file.name.replace(/\.[^.]+$/, '');
+    setModel(orientImported(), name);
+    let custom = document.querySelector('#in-shape option[value="__import"]');
+    if (!custom) {
+      custom = document.createElement('option');
+      custom.value = '__import';
+      $('in-shape').appendChild(custom);
+    }
+    custom.textContent = `Imported: ${name}`;
+    $('in-shape').value = '__import';
+    const tris = (soup.length / 9).toLocaleString();
+    toast(`Loaded ${name} (${tris} triangles). Set its real length and mass on the left.`);
+  } catch (e) {
+    console.error(e);
+    toast(`Couldn't load that file: ${e.message}`);
+  }
+}
+
+function exportCSV() {
+  const r = results();
+  const lines = [
+    ['FlowTunnel results'],
+    ['model', state.modelName],
+    ['fluid', state.medium],
+    ['density_kg_m3', state.rho],
+    ['kinematic_viscosity_m2_s', state.nu],
+    ['speed_m_s', r.U],
+    ['length_m', r.L],
+    ['mass_kg', state.mass],
+    ['pitch_deg', state.pitch],
+    ['yaw_deg', state.yaw],
+    ['roll_deg', state.roll],
+    ['view', state.view],
+    ['slice', state.slice],
+    ['reynolds', realRe()],
+    ['sim_reynolds', simRe()],
+    ['Cd', r.cd.mean],
+    [state.view === 'side' ? 'Cl' : 'Cs', r.cl.mean],
+    ['drag_N', r.drag],
+    ['lift_or_side_N', r.lift],
+    ['frontal_area_m2', r.A],
+    ['volume_m3', r.V],
+    ['buoyant_force_N', r.Fb],
+    ['weight_N', r.Wt],
+    ['strouhal', r.st],
+    ['shedding_hz', r.freq],
+    [],
+    ['time_s', 'Cd', state.view === 'side' ? 'Cl' : 'Cs'],
+    ...hist.cd.map((cd, i) => [(hist.step[i] * r.dt).toFixed(5), cd.toFixed(5), hist.cl[i].toFixed(5)]),
+  ];
+  const blob = new Blob([lines.map((l) => l.join(',')).join('\n')], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `flowtunnel-${state.modelName.replace(/\W+/g, '_')}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+function initUI() {
+  const sel = $('in-shape');
+  for (const [k, s] of Object.entries(SHAPES)) {
+    const o = document.createElement('option');
+    o.value = k;
+    o.textContent = s.label;
+    sel.appendChild(o);
+  }
+  sel.value = state.shape;
+  sel.addEventListener('change', () => {
+    if (sel.value === '__import') {
+      if (state.rawSoup) setModel(orientImported(), state.modelName);
+      return;
+    }
+    loadShape(sel.value);
+  });
+
+  $('btn-import').addEventListener('click', () => $('file').click());
+  $('file').addEventListener('change', (e) => {
+    const f = e.target.files[0];
+    if (f) importFile(f);
+    e.target.value = '';
+  });
+  $('in-up').addEventListener('change', () => {
+    if (state.rawSoup && sel.value === '__import') setModel(orientImported(), state.modelName);
+  });
+
+  let dragDepth = 0;
+  window.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    dragDepth++;
+    $('drop').classList.add('on');
+  });
+  window.addEventListener('dragleave', () => {
+    if (--dragDepth <= 0) $('drop').classList.remove('on');
+  });
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragDepth = 0;
+    $('drop').classList.remove('on');
+    const f = e.dataTransfer.files[0];
+    if (f) importFile(f);
+  });
+
+  $('in-length').value = state.length;
+  $('in-mass').value = state.mass;
+  $('in-length').addEventListener('input', (e) => {
+    const v = parseFloat(e.target.value);
+    if (v > 0) {
+      state.length = v;
+      updatePhysics();
+    }
+  });
+  $('in-mass').addEventListener('input', (e) => {
+    const v = parseFloat(e.target.value);
+    if (v >= 0) state.mass = v;
+  });
+
+  syncMedium = seg('seg-medium', 'medium', (m) => setMedium(m));
+  $('in-rho').addEventListener('input', (e) => {
+    const v = parseFloat(e.target.value);
+    if (v > 0) {
+      state.rho = v;
+      state.medium = 'custom';
+      syncMedium();
+      updateLegend();
+    }
+  });
+  $('in-nu').addEventListener('change', (e) => {
+    const v = parseFloat(e.target.value);
+    if (v > 0) {
+      state.nu = v;
+      state.medium = 'custom';
+      syncMedium();
+      updatePhysics();
+    } else {
+      e.target.value = state.nu.toExponential(3);
+    }
+  });
+  $('in-speed').addEventListener('input', (e) => {
+    const wasZero = state.speed <= 0;
+    state.speed = speedFromSlider(parseFloat(e.target.value));
+    syncSpeed();
+    updatePhysics();
+    updateLegend();
+    if (wasZero && state.speed > 0) {
+      solver.steps = 0;
+      resetStats();
+    }
+  });
+
+  const deg = (v) => `${v}°`;
+  bindSlider('in-pitch', 'pitch', deg, queueRebuild);
+  bindSlider('in-yaw', 'yaw', deg, queueRebuild);
+  bindSlider('in-roll', 'roll', deg, queueRebuild);
+  $('btn-flip').addEventListener('click', () => {
+    state.flip = !state.flip;
+    rebuildBody();
+    resetStats();
+  });
+
+  seg('seg-view', 'view', () => {
+    rebuildBody();
+    resetStats();
+  });
+  seg('seg-slice', 'slice', () => {
+    rebuildBody();
+    resetStats();
+  });
+  bindSlider('in-slicepos', 'slicePos', () => '', queueRebuild);
+
+  $('in-res').value = state.res;
+  $('in-res').addEventListener('change', (e) => {
+    state.res = +e.target.value;
+    makeSolver();
+  });
+  bindSlider('in-spf', 'spf', (v) => `${v}`);
+  bindSlider('in-cs', 'cs', (v) => v.toFixed(2), () => solver && (solver.cs = state.cs));
+
+  seg('seg-field', 'field', () => updateLegend());
+  $('in-tracers').addEventListener('change', (e) => (state.tracers = e.target.checked));
+  $('in-arrows').addEventListener('change', (e) => (state.arrows = e.target.checked));
+
+  const play = $('btn-play');
+  const togglePlay = () => {
+    state.running = !state.running;
+    play.textContent = state.running ? 'Pause' : 'Run';
+  };
+  play.addEventListener('click', togglePlay);
+  const resetFlow = () => {
+    solver.reset();
+    dye.fill(0);
+    initTracers();
+    resetStats();
+  };
+  $('btn-reset').addEventListener('click', resetFlow);
+  $('btn-export').addEventListener('click', exportCSV);
+  window.addEventListener('keydown', (e) => {
+    if (e.target.matches('input, select, textarea')) return;
+    if (e.code === 'Space') {
+      e.preventDefault();
+      togglePlay();
+    } else if (e.key === 'r' || e.key === 'R') resetFlow();
+  });
+
+  flowCanvas.addEventListener('mousemove', (e) => {
+    if (!solver) return;
+    const v = view();
+    const gx = ((e.offsetX * v.dpr - v.ox) / v.s) | 0;
+    const gy = (solver.ny - (e.offsetY * v.dpr - v.oy) / v.s) | 0;
+    if (gx < 1 || gy < 1 || gx >= solver.nx - 1 || gy >= solver.ny - 1) {
+      $('probe').textContent = '';
+      return;
+    }
+    const k = gy * solver.nx + gx;
+    if (solver.solid[k]) {
+      $('probe').textContent = 'inside body';
+      return;
+    }
+    const U = state.speed;
+    const u = (Math.hypot(solver.ux[k], solver.uy[k]) / 0.1) * U;
+    const cp = (solver.rho[k] - 1) / 3 / (0.5 * 0.01);
+    const p = cp * 0.5 * state.rho * U * U;
+    const w = (vort(k, gx, gy) / 0.1) * (U / (state.length / body.chord));
+    $('probe').textContent = `speed ${fmtNum(u)} m/s · pressure ${fmtNum(p)} Pa · spin ${fmtNum(w)} 1/s`;
+  });
+  flowCanvas.addEventListener('mouseleave', () => ($('probe').textContent = ''));
+}
+
+// ------------------------------------------------------------------ boot --
+initUI();
+if (!('WebGL2RenderingContext' in window) || location.search.includes('cpu')) useGpu = false;
+state.res = 1;
+$('in-res').value = 1;
+setMedium('sea');
+loadShape('turtle');
+makeSolver();
+if (!useGpu) {
+  state.res = 0;
+  $('in-res').value = 0;
+  state.spf = 4;
+  $('in-spf').value = 4;
+  $('out-spf').textContent = '4';
+  makeSolver();
+}
+updateLegend();
+resize3D();
+requestAnimationFrame(frame);
