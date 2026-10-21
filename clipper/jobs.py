@@ -119,7 +119,9 @@ class Manager:
             order = max([1000] + [x.order for x in self.jobs.values()]) + 1
         j = Job(source, options, order=order)
         j.title = options.get("source_title", "")
-        j.log(f"Work order WO-{order} received: {source} [{options.get('section') or 'full'}]")
+        rng = (f"{_tc(options['start'])}-{_tc(options['end'])}" if options.get("start") is not None
+               else options.get("section") or "full")
+        j.log(f"Work order WO-{order} received: {source} [{rng}]")
         j.save(force=True)
         with self.lock:
             self.jobs[j.id] = j
@@ -281,6 +283,11 @@ def run_pipeline(job, ctx):
         job.save(force=True)
     audio.unlink(missing_ok=True)
     export(job)
+
+
+def _tc(t):
+    t = int(t)
+    return f"{t // 3600:02d}:{t % 3600 // 60:02d}:{t % 60:02d}"
 
 
 def _safe(name, n=60):

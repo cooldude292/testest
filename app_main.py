@@ -29,6 +29,10 @@ def main():
     from clipper import setup_tasks
     from clipper.server import app
 
+    if "--serve" in sys.argv:  # engine only, no window (CI browser tests)
+        uvicorn.run(app, host="127.0.0.1", port=config.PORT, log_level="warning")
+        return
+
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     threading.Thread(target=server.run, daemon=True).start()
     for _ in range(100):

@@ -41,6 +41,24 @@ jobs:
           dist/Clipworks.app/Contents/MacOS/Clipworks --selftest \
             --twitch https://www.twitch.tv/videos/2905281858 --llm
 
+      - name: Preview plays in WebKit (Safari)
+        env:
+          CLIPPER_DATA: ${{ runner.temp }}/clipworks-web
+          CLIPWORKS_NO_SETUP: "1"
+        run: |
+          pip install selenium
+          sudo safaridriver --enable
+          dist/Clipworks.app/Contents/MacOS/Clipworks --serve &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8765/api/state >/dev/null && break; sleep 1; done
+          python packaging/webkit_check.py https://www.twitch.tv/videos/2905281858
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: webkit-screenshot
+          path: webkit_workbench.png
+          if-no-files-found: ignore
+
       - uses: actions/upload-artifact@v4
         with:
           name: Clipworks-dmg

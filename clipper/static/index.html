@@ -5,166 +5,169 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Clipworks</title>
 <link rel="stylesheet" href="/static/app.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232f5fe3'/%3E%3Cpath d='M9 11h14M9 16h9M9 21h11' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%231c2127'/%3E%3Crect x='7' y='7' width='8' height='8' fill='%23ec9a3c'/%3E%3C/svg%3E">
 </head>
 <body>
-<div class="shell">
-  <aside class="side">
-    <div class="brand">
-      <div class="mark"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><path d="M4 7h16M4 12h10M4 17h13"/></svg></div>
-      <div><b>Clipworks</b><small>Enterprise</small></div>
+<div class="app">
+  <header class="cmdbar">
+    <div class="mark"><i></i><b>CLIPWORKS</b><span>PRODUCTION CONSOLE</span></div>
+    <div class="cmd">
+      <span class="prompt">&gt;</span>
+      <input id="cmd" placeholder="Paste a Twitch / YouTube / Kick URL or type a command (HELP)" autocomplete="off" spellcheck="false">
+      <button class="go" id="cmd-go">GO</button>
     </div>
-    <nav class="nav">
-      <a href="#workbench" data-page="workbench"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M7 20h10M12 16v4"/></svg>Workbench</a>
-      <a href="#factory" data-page="factory"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V10l6 4V10l6 4V5h6v16z"/><path d="M7 17h2M12 17h2M17 17h2"/></svg>Factory<span class="count" id="nav-factory">0</span></a>
-      <a href="#inventory" data-page="inventory"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8M12 13v8"/></svg>Inventory<span class="count" id="nav-inventory">0</span></a>
-      <a href="#system" data-page="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>System</a>
-    </nav>
-    <div class="side-foot">
-      <div class="sysline"><span class="dot" id="sys-dot"></span><span id="sys-text">Connecting…</span></div>
-      <div id="sys-ver">Local deployment</div>
-    </div>
-  </aside>
+    <div class="clock"><span id="clock-date"></span><span id="clock"></span></div>
+  </header>
 
-  <main class="main">
-    <header class="top">
-      <h1 id="page-title">Workbench</h1><span class="crumb" id="page-crumb"></span>
-      <div class="right">
-        <span class="chip" id="chip-llm">LLM</span>
-        <button class="btn sm" id="btn-exports">Exports folder</button>
+  <nav class="tabs">
+    <a href="#workbench" data-page="workbench"><span class="fk">F1</span>Workbench</a>
+    <a href="#factory" data-page="factory"><span class="fk">F2</span>Factory <span class="n" id="nav-factory"></span></a>
+    <a href="#inventory" data-page="inventory"><span class="fk">F3</span>Inventory <span class="n" id="nav-inventory"></span></a>
+    <a href="#system" data-page="system"><span class="fk">F4</span>System <span class="n" id="nav-system"></span></a>
+    <div class="right"><button class="btn minimal" id="btn-file">Open file…</button><input type="file" id="file-input" accept="video/*" hidden>
+      <button class="btn minimal" id="btn-exports">Exports</button></div>
+  </nav>
+
+  <div class="stage">
+    <!-- WORKBENCH -->
+    <section class="page" id="page-workbench">
+      <div class="grid wb-empty" id="wb-empty">
+        <div class="panel">
+          <div class="ph"><span class="id">WB-00</span>Source log<span class="right faint mono" id="recent-n"></span></div>
+          <div class="pb" id="recent"></div>
+        </div>
+        <div class="panel">
+          <div class="ph"><span class="id">SYS</span>Readiness</div>
+          <div class="pb">
+            <div class="boot" id="boot"></div>
+            <div class="sect">Keyboard</div>
+            <div class="kv" id="keys"></div>
+          </div>
+        </div>
       </div>
-    </header>
 
-    <div class="content">
-      <div class="banner" id="provision" style="display:none">
-        <span class="spin" style="color:var(--warn)"></span>
-        <div><b>Provisioning production models.</b> <span class="muted" id="provision-msg">You can load and select footage now. The factory starts once models are ready.</span></div>
-        <div class="bar" id="provision-bar"><i></i></div>
-        <a class="btn sm" href="#system">Details</a>
+      <div class="grid wb" id="wb-loaded" style="display:none">
+        <div class="srcstrip">
+          <span class="tag" id="src-kind">SRC</span>
+          <span class="ttl" id="src-title"></span>
+          <span class="f" id="src-chan"></span>
+          <span class="f">DUR <b id="src-dur"></b></span>
+          <span class="f" id="src-id"></span>
+        </div>
+
+        <div class="panel">
+          <div class="ph"><span class="id">WB-01</span>Source monitor<span class="right faint mono" id="mon-fmt"></span></div>
+          <div class="monitor">
+            <video id="video" playsinline preload="metadata"></video>
+            <div class="ovl" id="ovl-src">SRC</div><div class="ovl r" id="ovl-tc">00:00:00</div>
+            <div class="player-msg" id="player-msg" style="display:none"></div>
+          </div>
+          <div class="transport">
+            <button class="btn" id="tp-play" title="Play / pause (Space)">PLAY</button>
+            <button class="btn minimal" id="tp-back" title="Back 10s (J)">−10</button>
+            <button class="btn minimal" id="tp-fwd" title="Forward 10s (L)">+10</button>
+            <span class="tc" id="tp-tc">00:00:00 <small>/ 00:00:00</small></span>
+            <span style="flex:1"></span>
+            <button class="btn" id="tp-in">MARK IN <span class="key">I</span></button>
+            <button class="btn" id="tp-out">MARK OUT <span class="key">O</span></button>
+            <span class="sep"></span>
+            <button class="btn minimal" id="tp-loop">PLAY RANGE</button>
+            <button class="btn minimal" id="tp-clear">CLEAR</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="ph"><span class="id">WB-02</span>Signal timeline<span class="right"><span class="mono t2" id="tl-signal"></span><span class="mono faint" id="tl-status"></span></span></div>
+          <div class="tlwrap"><canvas class="tl" id="tl"></canvas></div>
+        </div>
+
+        <div class="side-col">
+          <div class="panel">
+            <div class="ph"><span class="id">WB-03</span>Work order<span class="right"><span class="tag" id="wo-state">NO RANGE</span></span></div>
+            <div class="kv">
+              <div>In</div><div><input class="input mono" id="sel-in" placeholder="--:--:--"></div>
+              <div>Out</div><div><input class="input mono" id="sel-out" placeholder="--:--:--"></div>
+              <div>Length</div><div class="data" id="sel-len">—</div>
+              <div>Units</div><div><select class="input" id="opt-clips"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option><option>8</option><option>10</option></select></div>
+              <div>Unit length</div><div><select class="input" id="opt-len"><option value="15-30">15–30 s</option><option value="20-45" selected>20–45 s</option><option value="30-60">30–60 s</option><option value="45-90">45–90 s</option></select></div>
+              <div>Layout</div><div><select class="input" id="opt-layout">
+                <option value="auto">AUTO</option><option value="split">FACECAM / GAMEPLAY</option><option value="track">FOLLOW SPEAKER</option>
+                <option value="zoom">GAMEPLAY ZOOM</option><option value="fit">FULL FRAME / BLUR</option><option value="center">CENTER CROP</option></select></div>
+            </div>
+            <div class="pad"><button class="btn amber wide" id="send" disabled>DISPATCH TO FACTORY ▸</button>
+              <div class="faint" style="margin-top:6px;font-size:10.5px">Only the selected range is pulled, transcribed and analyzed.</div></div>
+          </div>
+          <div class="panel">
+            <div class="ph"><span class="id">WB-04</span>Signal peaks<span class="right faint mono" id="hot-src"></span></div>
+            <div class="pb" id="hot"></div>
+          </div>
+        </div>
       </div>
+    </section>
 
-      <!-- WORKBENCH -->
-      <section class="page" id="page-workbench">
-        <div class="loadbar">
-          <input class="input" id="src-input" placeholder="Paste a YouTube, Twitch or Kick link" autocomplete="off" spellcheck="false">
-          <button class="btn primary" id="src-load">Load source</button>
-          <button class="btn" id="src-file">Open file…</button>
-          <input type="file" id="src-file-input" accept="video/*" hidden>
-        </div>
-
-        <div id="wb-empty">
-          <div class="card">
-            <div class="card-h"><h3>Recent sources</h3></div>
-            <div id="recent"></div>
+    <!-- FACTORY -->
+    <section class="page" id="page-factory">
+      <div class="grid split">
+        <div class="panel">
+          <div class="ph"><span class="id">FC-01</span>Production line</div>
+          <div class="metrics">
+            <div><div class="l">Active</div><div class="v" id="k-run">0</div></div>
+            <div><div class="l">Queued</div><div class="v" id="k-queue">0</div></div>
+            <div><div class="l">Shipped</div><div class="v" id="k-done">0</div></div>
+            <div><div class="l">Faults</div><div class="v" id="k-fail">0</div></div>
+            <div><div class="l">Units produced</div><div class="v" id="k-clips">0</div></div>
           </div>
+          <div class="pb" id="orders"></div>
         </div>
+        <div class="panel">
+          <div class="ph"><span class="id">FC-02</span>Work order detail<span class="right mono data" id="wo-id"></span></div>
+          <div class="pb" id="wo-detail"><div class="empty"><b>NO ORDER SELECTED</b>Select a row on the production line.</div></div>
+        </div>
+      </div>
+    </section>
 
-        <div id="wb-loaded" style="display:none">
-          <div class="srchead">
-            <span class="badge" id="src-kind">SRC</span>
-            <h2 id="src-title"></h2>
-            <span class="muted" id="src-meta"></span>
+    <!-- INVENTORY -->
+    <section class="page" id="page-inventory">
+      <div class="grid split">
+        <div class="panel">
+          <div class="ph"><span class="id">IN-01</span>Finished goods<span class="right faint mono" id="inv-count"></span></div>
+          <div class="filters">
+            <input class="input" id="inv-q" placeholder="Filter hooks, titles, sources" style="width:240px">
+            <select class="input" id="inv-sort"><option value="new">SORT: NEWEST</option><option value="score">SORT: SCORE</option></select>
+            <select class="input" id="inv-order"><option value="">ALL ORDERS</option></select>
           </div>
-          <div class="wb">
-            <div class="card">
-              <div class="player"><video id="video" playsinline preload="metadata"></video><div class="player-msg" id="player-msg" style="display:none"></div></div>
-              <div class="transport">
-                <button class="btn sm" id="tp-play" title="Play/Pause (Space)">Play</button>
-                <button class="btn sm ghost" id="tp-back" title="Back 10s (J)">−10s</button>
-                <button class="btn sm ghost" id="tp-fwd" title="Forward 10s (L)">+10s</button>
-                <span class="tc" id="tp-tc">00:00:00 / 00:00:00</span>
-                <span style="flex:1"></span>
-                <button class="btn sm" id="tp-in">Mark In <span class="kbd">I</span></button>
-                <button class="btn sm" id="tp-out">Mark Out <span class="kbd">O</span></button>
-                <button class="btn sm ghost" id="tp-loop" title="Play the selection">Play selection</button>
-                <button class="btn sm ghost" id="tp-clear">Clear</button>
-              </div>
-              <div class="timeline">
-                <div class="tl-meta"><b id="tl-signal">Signal</b><span id="tl-status"></span><span class="right">Drag to select a range · drag the edges to trim</span></div>
-                <canvas class="tl" id="tl"></canvas>
-              </div>
-            </div>
-
-            <div style="display:grid; gap:16px">
-              <div class="card">
-                <div class="card-h"><h3>Work order</h3><span class="right badge" id="wo-state">No selection</span></div>
-                <div class="card-b">
-                  <div class="grid2">
-                    <div class="field"><label>In</label><input class="input mono" id="sel-in" placeholder="00:00:00"></div>
-                    <div class="field"><label>Out</label><input class="input mono" id="sel-out" placeholder="00:00:00"></div>
-                  </div>
-                  <div class="sum" style="margin-top:10px"><span class="muted">Selection length</span><span class="mono" id="sel-len">—</span></div>
-                  <div class="grid2" style="margin-top:10px">
-                    <div class="field"><label>Clips to produce</label>
-                      <select class="input" id="opt-clips"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option><option>8</option><option>10</option></select></div>
-                    <div class="field"><label>Clip length</label>
-                      <select class="input" id="opt-len"><option value="15-30">15–30s</option><option value="20-45" selected>20–45s</option><option value="30-60">30–60s</option><option value="45-90">45–90s</option></select></div>
-                  </div>
-                  <div class="field" style="margin-top:10px"><label>Layout</label>
-                    <select class="input" id="opt-layout">
-                      <option value="auto">Automatic</option>
-                      <option value="split">Facecam over gameplay</option>
-                      <option value="track">Follow speaker</option>
-                      <option value="zoom">Gameplay zoom</option>
-                      <option value="fit">Full frame, blurred fill</option>
-                      <option value="center">Center crop</option>
-                    </select></div>
-                  <button class="btn primary big" id="send" style="margin-top:14px" disabled>Send to Factory</button>
-                  <div class="note">Only the selected range is downloaded, transcribed and analyzed.</div>
-                </div>
-              </div>
-
-              <div class="card">
-                <div class="card-h"><h3>Hot spots</h3><span class="right faint" id="hot-src"></span></div>
-                <div id="hot"><div class="empty">No signal yet.</div></div>
-              </div>
-            </div>
-          </div>
+          <div class="pb" id="clips"></div>
         </div>
-      </section>
+        <div class="panel">
+          <div class="ph"><span class="id">IN-02</span>Unit inspector<span class="right mono data" id="unit-id"></span></div>
+          <div class="pb" id="unit"><div class="empty"><b>NO UNIT SELECTED</b>Select a clip to review it.</div></div>
+        </div>
+      </div>
+    </section>
 
-      <!-- FACTORY -->
-      <section class="page" id="page-factory">
-        <div class="kpis">
-          <div class="card kpi"><div class="l">In production</div><div class="v" id="k-run">0</div></div>
-          <div class="card kpi"><div class="l">Queued</div><div class="v" id="k-queue">0</div></div>
-          <div class="card kpi"><div class="l">Orders shipped</div><div class="v" id="k-done">0</div></div>
-          <div class="card kpi"><div class="l">Clips produced</div><div class="v" id="k-clips">0</div></div>
+    <!-- SYSTEM -->
+    <section class="page" id="page-system">
+      <div class="grid sys">
+        <div class="panel">
+          <div class="ph"><span class="id">SY-01</span>Provisioning<span class="right"><button class="btn" id="retry-setup">RETRY</button></span></div>
+          <div class="pb" id="steps"></div>
         </div>
-        <div class="card">
-          <div class="card-h"><h3>Production line</h3></div>
-          <div id="orders"><div class="empty"><b>No work orders</b>Select a range in the Workbench and send it to the factory.</div></div>
+        <div class="panel">
+          <div class="ph"><span class="id">SY-02</span>Configuration</div>
+          <div class="pb"><div class="kv" id="config"></div></div>
         </div>
-      </section>
+      </div>
+    </section>
+  </div>
 
-      <!-- INVENTORY -->
-      <section class="page" id="page-inventory">
-        <div class="filters">
-          <input class="input" id="inv-q" placeholder="Search hooks, titles, sources">
-          <select class="input" id="inv-sort"><option value="new">Newest first</option><option value="score">Highest score</option></select>
-          <select class="input" id="inv-order"><option value="">All orders</option></select>
-          <span style="flex:1"></span>
-          <span class="muted" id="inv-count"></span>
-        </div>
-        <div class="clips" id="clips"></div>
-        <div class="card" id="inv-empty"><div class="empty"><b>Inventory is empty</b>Finished clips from the factory land here.</div></div>
-      </section>
-
-      <!-- SYSTEM -->
-      <section class="page" id="page-system">
-        <div class="sys">
-          <div class="card">
-            <div class="card-h"><h3>Provisioning</h3><span class="right"><button class="btn sm" id="retry-setup">Retry</button></span></div>
-            <div id="steps"></div>
-          </div>
-          <div class="card">
-            <div class="card-h"><h3>Configuration</h3></div>
-            <div class="card-b kv" id="config"></div>
-          </div>
-        </div>
-      </section>
-    </div>
-  </main>
+  <footer class="status">
+    <span><i class="led off" id="st-led"></i><span id="st-engine">ENGINE</span></span>
+    <span>LLM <b id="st-llm">—</b></span>
+    <span>QUEUE <b id="st-queue">0</b></span>
+    <span class="grow" id="st-active">IDLE</span>
+    <span id="st-exports">EXPORTS —</span>
+    <span id="st-ver">v—</span>
+  </footer>
 </div>
 <div class="toast" id="toast"></div>
 <script src="/static/vendor/hls.min.js"></script>
