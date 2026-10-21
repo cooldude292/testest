@@ -256,9 +256,19 @@ def run_pipeline(job, ctx):
 
     ctx.stage("moments", 0.0, "Checking the LLM is up")
     setup_tasks.ensure_ollama()
-    picks = moments.find_moments(words, int(o.get("max_clips", 5)), float(o.get("min_len", 20)),
-                                 float(o.get("max_len", 60)), ctx, audio_path=audio, chat=messages, chat_base=chat_base,
-                                 kind="livestream" if meta.get("twitch_id") else "video")
+    kind = "livestream" if meta.get("twitch_id") else "video"
+    if o.get("mode") == "exact":
+        # Stream downloads come in whole chunks, so the file can start before the In point.
+        a = max(0.0, float(o.get("start", meta["offset"])) - meta["offset"])
+        b = min(duration, float(o.get("end", meta["offset"] + duration)) - meta["offset"])
+        inside = [w for w in words if w["s"] >= a - 0.05 and w["e"] <= b + 0.2]
+        clip = moments.exact_clip(inside, b - a, ctx, audio_path=audio, chat=messages, chat_base=chat_base, kind=kind)
+        clip["start"], clip["end"] = a, b
+        picks = [clip]
+    else:
+        picks = moments.find_moments(words, int(o.get("max_clips", 5)), float(o.get("min_len", 20)),
+                                     float(o.get("max_len", 60)), ctx, audio_path=audio, chat=messages,
+                                     chat_base=chat_base, kind=kind)
     if not picks:
         raise RuntimeError("The LLM didn't find any clip-worthy moments")
     ctx.log(f"Picked {len(picks)} moment(s)")

@@ -37,6 +37,7 @@ class OrderReq(BaseModel):
     min_len: int = 20
     max_len: int = 60
     layout: str = "auto"
+    mode: str = "ai"          # "ai": find clips inside the range; "exact": the range is the clip
     title: str = ""
 
 
@@ -124,15 +125,19 @@ def upload(file: UploadFile = File(...)):
 
 @app.post("/api/orders")
 def create_order(body: OrderReq):
-    if body.end - body.start < 10:
+    if body.mode not in ("ai", "exact"):
+        raise HTTPException(400, "Unknown mode")
+    if body.mode == "ai" and body.end - body.start < 10:
         raise HTTPException(400, "Select at least 10 seconds")
+    if body.mode == "exact" and not 3 <= body.end - body.start <= 180:
+        raise HTTPException(400, "Exact cuts must be between 3 seconds and 3 minutes")
     if body.layout not in ("auto", "track", "split", "zoom", "fit", "center"):
         raise HTTPException(400, "Unknown layout")
     min_len = max(5, body.min_len)
     max_len = max(min_len + 5, body.max_len)
     opts = {"section": f"{body.start:.2f}-{body.end:.2f}", "start": body.start, "end": body.end,
             "max_clips": max(1, min(20, body.max_clips)), "min_len": min_len, "max_len": max_len,
-            "layout": body.layout, "source_title": body.title}
+            "layout": body.layout, "mode": body.mode, "source_title": body.title}
     return manager.submit(body.source.strip(), opts).to_dict()
 
 

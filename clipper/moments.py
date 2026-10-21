@@ -377,3 +377,46 @@ def _rerank(cands, kind, ctx):
         hook = str(r.get("hook", "")).strip()[:90]
         if hook and not _bad_hook(hook, c["title"], [{"text": c["text"]}]):
             c["hook"] = hook
+
+
+PACKAGE = """This is the full transcript of a short clip from a {kind} that an editor already cut by hand.
+Write the packaging for it.
+
+- title: plain description for reference, max 8 words
+- hook: the on-screen text at the top. It must NOT describe the clip and must NOT repeat the title or quote it.
+  It creates curiosity or tension so people keep watching. Max 10 words, no emojis, no hashtags.
+- score: virality 0-100, be honest
+- reason: one sentence
+
+TRANSCRIPT:
+{text}"""
+
+PACKAGE_SCHEMA = {
+    "type": "object",
+    "properties": {"title": {"type": "string"}, "hook": {"type": "string"}, "score": {"type": "integer"},
+                   "reason": {"type": "string"}},
+    "required": ["title", "hook", "score", "reason"],
+}
+
+
+def exact_clip(words, duration, ctx, audio_path=None, chat=None, chat_base=None, kind="video"):
+    """Editor picked the exact range: keep it whole, just write the hook and score it."""
+    lines = build_lines(words)
+    annotate(lines, audio_path, chat, chat_base) if lines else None
+    text = " ".join(ln["text"] for ln in lines)
+    ctx.stage("moments", None, f"Writing the hook with {config.LLM_MODEL}")
+    try:
+        p = ask_llm(PACKAGE.format(kind=kind, text=text[:6000]), PACKAGE_SCHEMA)
+    except Exception as ex:
+        ctx.log(f"Packaging pass failed, using defaults: {ex}")
+        p = {}
+    title = str(p.get("title", "")).strip()[:80] or "Exact cut"
+    hook = str(p.get("hook", "")).strip()[:90]
+    if _bad_hook(hook, title, lines):
+        hook = title
+    llm = max(0, min(100, int(p.get("score") or 0)))
+    sig = round(_signal_score(lines, bool(chat))) if lines else 0
+    w = 0.35 if chat else (0.15 if audio_path else 0.0)
+    return {"start": 0.0, "end": duration, "title": title, "hook": hook, "llm_score": llm, "signal_score": sig,
+            "peak_chat": max((ln.get("chat", 0) for ln in lines), default=0), "reason": str(p.get("reason", "")).strip(),
+            "text": text, "score": round((1 - w) * llm + w * sig)}

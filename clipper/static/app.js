@@ -216,15 +216,18 @@ function setSel(a, b) {
   updateSel();
 }
 function updateSel() {
-  const ok = !!sel && sel.end - sel.start >= 10;
+  const exact = $("#opt-mode").value === "exact", len = sel ? sel.end - sel.start : 0;
+  const ok = !!sel && (exact ? len >= 3 && len <= 180 : len >= 10);
+  $("#opt-clips").disabled = $("#opt-len").disabled = exact;
   $("#sel-in").value = sel ? tc(sel.start) : ""; $("#sel-out").value = sel ? tc(sel.end) : "";
   $("#sel-len").textContent = sel ? tc(sel.end - sel.start) : "—";
   const st = $("#wo-state");
-  [st.textContent, st.className] = !sel ? ["NO RANGE", "tag"] : !ok ? ["TOO SHORT", "tag amber"] :
+  [st.textContent, st.className] = !sel ? ["NO RANGE", "tag"] : !ok ? [exact && len > 180 ? "MAX 3 MIN" : "TOO SHORT", "tag amber"] :
     sel.end - sel.start > 3600 ? ["LONG RANGE", "tag amber"] : ["READY", "tag green"];
   $("#send").disabled = !ok;
   drawTimeline();
 }
+$("#opt-mode").addEventListener("change", updateSel);
 ["#sel-in", "#sel-out"].forEach(id => $(id).addEventListener("change", () => {
   const a = parseTc($("#sel-in").value), b = parseTc($("#sel-out").value);
   if (a != null && b != null) setSel(a, b); else updateSel();
@@ -236,7 +239,8 @@ async function dispatch() {
   try {
     const wo = await api("/api/orders", {method: "POST", body: JSON.stringify({
       source: src.source, start: sel.start, end: sel.end, title: src.title,
-      max_clips: +$("#opt-clips").value, min_len: mn, max_len: mx, layout: $("#opt-layout").value})});
+      max_clips: +$("#opt-clips").value, min_len: mn, max_len: mx, layout: $("#opt-layout").value,
+      mode: $("#opt-mode").value})});
     toast(`WO-${wo.order} DISPATCHED · ${tc(sel.start)}–${tc(sel.end)}`);
     selOrder = wo.id; sel = null; updateSel(); poll();
   } catch (e) { toast(e.message, true); $("#send").disabled = false; }
@@ -373,7 +377,7 @@ function renderOrderDetail() {
       <div>Status</div><div><span class="tag ${cls}">${label}</span></div>
       <div>Source</div><div>${esc(j.title || j.source)}</div>
       <div>Range</div><div class="data">${o.start != null ? `${tc(o.start)} – ${tc(o.end)}  (${tc(o.end - o.start)})` : "FULL"}</div>
-      <div>Spec</div><div class="mono t2">${o.max_clips} UNITS · ${o.min_len}–${o.max_len}s · ${o.layout === "auto" ? "AUTO" : LAYOUTS[o.layout] || o.layout}</div>
+      <div>Spec</div><div class="mono t2">${o.mode === "exact" ? "EXACT CUT" : `${o.max_clips} UNITS · ${o.min_len}–${o.max_len}s`} · ${o.layout === "auto" ? "AUTO" : LAYOUTS[o.layout] || o.layout}</div>
       <div>Received</div><div class="mono t2">${isoTime(j.created)}</div>
       ${j.export_dir ? `<div>Exported</div><div class="mono t2">${esc(j.export_dir)}</div>` : ""}
     </div>
