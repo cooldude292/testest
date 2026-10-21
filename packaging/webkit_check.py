@@ -8,11 +8,12 @@ from selenium.webdriver.common.by import By
 
 URL = sys.argv[1]
 d = webdriver.Safari()
+d.set_window_size(1440, 900)
 try:
     d.get("http://127.0.0.1:8765/")
     time.sleep(2)
-    d.find_element(By.ID, "src-input").send_keys(URL)
-    d.find_element(By.ID, "src-load").click()
+    d.find_element(By.ID, "cmd").send_keys(URL)
+    d.find_element(By.ID, "cmd-go").click()
     for _ in range(60):
         if d.find_element(By.ID, "wb-loaded").is_displayed():
             break
@@ -31,4 +32,8 @@ try:
         sys.exit("preview did not play in WebKit")
     print("PASS  WebKit preview playback")
 finally:
+    try:
+        d.save_screenshot("webkit_workbench.png")
+    except Exception:
+        pass
     d.quit()
