@@ -186,3 +186,55 @@ canvas.tl { width: 100%; flex: 1; display: block; background: #0d1014; border: 1
 .toast div { background: var(--raise); border: 1px solid var(--line-strong); border-left: 3px solid var(--blue); color: var(--text); padding: 7px 12px; font-family: var(--mono); font-size: 11px; animation: pop .15s ease-out; }
 .toast div.err { border-left-color: var(--red); }
 @keyframes pop { from { transform: translateX(8px); opacity: 0; } }
+
+/* ---------- pipeline tabs ---------- */
+.tabs .flow { display: flex; align-items: center; padding: 0 2px; color: var(--faint); font-size: 9px; border-right: 1px solid var(--line); }
+.tabs .sys-tab { margin-left: 18px; border-left: 1px solid var(--line); }
+
+/* ---------- packaging ---------- */
+@font-face { font-family: "Montserrat"; src: url("/fonts/Montserrat.ttf") format("truetype"); font-weight: 100 900; }
+.pkg { grid-template-columns: 300px minmax(0, 1fr) 340px; }
+.pkg > .panel:last-child { display: flex; flex-direction: column; }
+.bay { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.bay-main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.bay-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: #0b0d10; padding: 12px; }
+.phone { position: relative; height: 100%; max-height: 100%; aspect-ratio: 9 / 16; background: #000; overflow: hidden; --k: .3;
+         outline: 1px solid var(--line-strong); }
+.phone-fx { position: absolute; inset: 0; transform-origin: 50% 50%; }
+.phone-fx video { width: 100%; height: 100%; display: block; object-fit: cover; }
+.pv-hook { position: absolute; left: 50%; transform: translateX(-50%); top: calc(230px * var(--k)); max-width: calc(960px * var(--k));
+           background: #fff; color: #000; font: 800 calc(56px * var(--k)) / calc(70px * var(--k)) "Montserrat", sans-serif; text-align: center;
+           padding: calc(26px * var(--k)) calc(28px * var(--k)); border-radius: calc(22px * var(--k)); white-space: normal; width: max-content; }
+.pv-hook.split { top: auto; bottom: auto; transform: translate(-50%, -50%); top: calc(640px * var(--k)); }
+.pv-cap { position: absolute; left: 0; right: 0; top: calc(1320px * var(--k)); text-align: center; padding: 0 calc(60px * var(--k));
+          font: 900 calc(78px * var(--k)) / 1.25 "Montserrat", sans-serif; color: #fff; text-transform: uppercase;
+          -webkit-text-stroke: calc(16px * var(--k)) #000; paint-order: stroke fill; }
+.pv-cap.split { top: calc(1440px * var(--k)); }
+.pv-cap b { display: inline-block; transform: scale(1.12); margin: 0 .12em; font-weight: 900; }
+.pv-flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+.track-wrap { flex: none; padding: 6px 8px 8px; border-top: 1px solid var(--line); }
+.track { position: relative; height: 56px; background: #0d1014; border: 1px solid var(--line); cursor: crosshair; overflow: hidden; }
+.track-trim { position: absolute; top: 0; bottom: 0; background: rgba(0, 0, 0, .6); z-index: 2; }
+.track-trim.l { left: 0; border-right: 2px solid var(--amber); cursor: ew-resize; }
+.track-trim.r { right: 0; border-left: 2px solid var(--amber); cursor: ew-resize; }
+.track-ph { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--data); z-index: 4; pointer-events: none; }
+.mk { position: absolute; top: 6px; height: 42px; border-left: 2px solid var(--amber); padding: 2px 6px 0 4px; z-index: 3; cursor: grab;
+      font: 700 9.5px var(--mono); color: var(--amber); background: linear-gradient(90deg, rgba(200, 118, 25, .28), transparent); white-space: nowrap; }
+.mk small { display: block; color: var(--muted); font-weight: 500; }
+.mk.on { border-color: var(--blue); color: var(--blue); background: linear-gradient(90deg, rgba(76, 144, 240, .3), transparent); }
+.track-words { position: relative; height: 15px; margin-top: 3px; overflow: hidden; font: 9.5px var(--mono); color: var(--faint); }
+.track-words span { position: absolute; top: 0; white-space: nowrap; }
+.sfx-row { display: grid; grid-template-columns: 26px 1fr auto; gap: 6px; align-items: center; padding: 3px 10px; border-bottom: 1px solid var(--line-2); cursor: default; }
+.sfx-row:hover { background: var(--panel-h); }
+.sfx-row.on { background: var(--amber-bg); }
+.sfx-row .nm { font-weight: 600; }
+.sfx-row .hint { color: var(--faint); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.range { width: 100%; accent-color: var(--amber); }
+
+/* ---------- shipping ---------- */
+.plat { border-top: 1px solid var(--line); padding: 8px 10px 10px; }
+.plat-h { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.plat-h b { font-family: var(--mono); letter-spacing: .1em; font-size: 11px; }
+.plat textarea, .plat input.input { width: 100%; }
+.plat textarea { height: auto; padding: 6px; line-height: 1.45; resize: vertical; font-size: 12px; }
+.plat .row { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; align-items: center; }

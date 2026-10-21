@@ -79,7 +79,8 @@ def run(args):
         from fastapi.testclient import TestClient
         from clipper.server import app
         c = TestClient(app)
-        for path in ("/", "/static/app.js", "/static/app.css", "/static/vendor/hls.min.js", "/static/vendor/inter.woff2"):
+        for path in ("/", "/static/app.js", "/static/app.css", "/static/vendor/hls.min.js", "/static/vendor/inter.woff2",
+                     "/fonts/Montserrat.ttf", "/api/sfx", "/api/sfx/file/boom"):
             r = c.get(path)
             if r.status_code != 200:
                 raise RuntimeError(f"{path} -> {r.status_code}")
@@ -127,6 +128,33 @@ def run(args):
             raise RuntimeError(f"bad size {w}x{h}")
         return f"{w}x{h} {float(d['format']['duration']):.1f}s layout={clip['layout']}"
 
+    @check("package: sound effects, zoom punch, trim, new hook")
+    def pkg():
+        from clipper import packaging, sfx
+        lib = sfx.library()
+        if len(lib) < 10:
+            raise RuntimeError(f"sound library too small: {len(lib)}")
+        base = tmp / "clip_base.mp4"
+        if not base.exists():
+            raise RuntimeError("factory render didn't leave a base file")
+        words = json.loads((tmp / "words.json").read_text()) if (tmp / "words.json").exists() else []
+        spec = packaging.clean_spec({"hook": "selftest hook", "hook_on": True, "captions_on": True, "color": "green",
+                                     "trim": [0.5, 5.0], "sfx": [{"t": 0.6, "sound": "whoosh", "vol": 0.8, "fx": "none"},
+                                                                 {"t": 2.0, "sound": "boom", "vol": 0.9, "fx": "zoom"}]}, 5.5)
+        out = tmp / "pkg.mp4"
+        packaging.compose(base, words, spec, "zoom", out)
+        d = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type:format=duration",
+                                       "-of", "json", str(out)], capture_output=True, text=True).stdout)
+        kinds = sorted(s["codec_type"] for s in d["streams"])
+        if kinds != ["audio", "video"] or abs(float(d["format"]["duration"]) - 4.5) > 0.3:
+            raise RuntimeError(f"bad package: {kinds} {d['format']['duration']}")
+        loud = subprocess.run(["ffmpeg", "-hide_banner", "-ss", "1.45", "-t", "0.4", "-i", str(out), "-af", "volumedetect",
+                               "-f", "null", "-"], capture_output=True, text=True).stderr
+        peak = float(loud.split("max_volume:")[1].split("dB")[0])
+        if peak < -12:
+            raise RuntimeError(f"boom not audible in the mix (peak {peak} dB)")
+        return f"{len(lib)} sounds, 4.5s package, boom peak {peak} dB"
+
     @check("load Twitch VOD (preview + chat)")
     def twitch():
         from clipper import chat, sources
@@ -150,10 +178,16 @@ def run(args):
         transcript = "\n".join(f"[{ln['i']}] (00:0{int(ln['start'])}) {ln['text']}" for ln in lines)
         out = moments.ask_llm(moments.PROMPT.format(kind="video", signal_help="", k=1, min_len=2, max_len=10,
                                                     transcript=transcript))
+        from clipper import packaging
+        marks = packaging.suggest_sfx(words, "Nobody expected that", 6.0)
+        kit = packaging.ship_kit("Nobody expected that", "test clip", " ".join(w["w"] for w in words),
+                                 "Joe_Bartolozzi", "Twitch", "#ad")
         setup_tasks.stop_ollama()
-        return f"reply parsed: {json.dumps(out)[:160]}"
+        if not marks or "#ad" not in kit["tiktok"] or "Joe_Bartolozzi" not in kit["tiktok"]:
+            raise RuntimeError(f"packaging LLM calls broke: {marks} {kit}")
+        return f"moments: {json.dumps(out)[:100]} | sfx: {[(m['t'], m['sound']) for m in marks]} | tiktok: {kit['tiktok'][:80]!r}"
 
-    for fn in (tools, web, stt, rend, twitch, llm):
+    for fn in (tools, web, stt, rend, pkg, twitch, llm):
         fn()
     sys.stdout.flush()
 

@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import config, setup_tasks, sources
+from . import config, packaging, setup_tasks, sfx, sources
 from .jobs import Manager
 
 app = FastAPI(title=config.APP_NAME)
@@ -23,6 +23,7 @@ if not os.environ.get("CLIPWORKS_NO_SETUP"):  # the selftest drives setup steps 
 STATIC = Path(__file__).parent / "static"
 app.mount("/files", StaticFiles(directory=config.JOBS_DIR), name="files")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+app.mount("/fonts", StaticFiles(directory=Path(__file__).parent / "fonts"), name="fonts")
 
 
 class ProbeReq(BaseModel):
@@ -180,3 +181,137 @@ def reveal(jid: str):
 def reveal_exports():
     _reveal(config.EXPORT_DIR)
     return {"path": str(config.EXPORT_DIR)}
+
+
+# ---------------- packaging ----------------
+
+def _unit(jid, idx):
+    try:
+        return manager.unit(jid, idx)
+    except KeyError:
+        raise HTTPException(404, "Unit not found")
+
+
+@app.get("/api/sfx")
+def sfx_library():
+    return sfx.library()
+
+
+@app.get("/api/sfx/file/{sid:path}")
+def sfx_file(sid: str):
+    try:
+        return FileResponse(sfx.path_for(sid))
+    except FileNotFoundError:
+        raise HTTPException(404)
+
+
+@app.post("/api/sfx/import")
+def sfx_import(file: UploadFile = File(...)):
+    try:
+        return {"id": sfx.import_file(file.filename or "sound", file.file)}
+    except ValueError as ex:
+        raise HTTPException(400, str(ex))
+
+
+@app.post("/api/sfx/reveal")
+def sfx_reveal():
+    sfx.USER_DIR.mkdir(parents=True, exist_ok=True)
+    _reveal(sfx.USER_DIR)
+    return {"path": str(sfx.USER_DIR)}
+
+
+@app.get("/api/units/{jid}/{idx}")
+def unit_detail(jid: str, idx: int):
+    j, c = _unit(jid, idx)
+    words = manager.unit_words(j, c)
+    spec = c.get("package") or packaging.default_spec(c)
+    base = j.dir / c["file"].replace(".mp4", "_base.mp4")
+    return {"spec": spec, "words": words, "duration": round(c["end"] - c["start"], 2),
+            "base_url": f"/files/{jid}/{base.name}" if base.exists() else None, "layout": c.get("layout", "track")}
+
+
+@app.put("/api/units/{jid}/{idx}/package")
+def unit_save(jid: str, idx: int, spec: dict):
+    _unit(jid, idx)
+    return manager.save_package(jid, idx, spec)
+
+
+@app.post("/api/units/{jid}/{idx}/retime")
+def unit_retime(jid: str, idx: int, body: dict):
+    j, c = _unit(jid, idx)
+    return packaging.retime(manager.unit_words(j, c), str(body.get("text", "")))
+
+
+@app.post("/api/units/{jid}/{idx}/suggest-sfx")
+def unit_suggest(jid: str, idx: int, body: dict):
+    j, c = _unit(jid, idx)
+    words = body.get("words") or manager.unit_words(j, c)
+    return packaging.suggest_sfx(words, str(body.get("hook", "")), c["end"] - c["start"])
+
+
+@app.post("/api/units/{jid}/{idx}/render")
+def unit_render(jid: str, idx: int):
+    _unit(jid, idx)
+    try:
+        manager.queue_package(jid, idx)
+    except ValueError as ex:
+        raise HTTPException(400, str(ex))
+    return {"ok": True}
+
+
+# ---------------- shipping ----------------
+
+UPLOAD_PAGES = {"tiktok": "https://www.tiktok.com/tiktokstudio/upload", "youtube": "https://www.youtube.com/upload",
+                "instagram": "https://www.instagram.com/", "x": "https://x.com/compose/post"}
+
+
+@app.get("/api/settings")
+def get_settings():
+    return packaging.load_settings()
+
+
+@app.put("/api/settings")
+def put_settings(body: dict):
+    packaging.save_settings(body)
+    return packaging.load_settings()
+
+
+@app.post("/api/units/{jid}/{idx}/kit")
+def unit_kit(jid: str, idx: int):
+    _unit(jid, idx)
+    return manager.make_kit(jid, idx, packaging.load_settings().get("campaign", ""))
+
+
+@app.put("/api/units/{jid}/{idx}/ship")
+def unit_ship(jid: str, idx: int, body: dict):
+    _unit(jid, idx)
+    return manager.update_ship(jid, idx, body)
+
+
+@app.post("/api/units/{jid}/{idx}/reveal")
+def unit_reveal(jid: str, idx: int):
+    j, c = _unit(jid, idx)
+    exp = (c.get("pkg") or {}).get("export")
+    path = Path(exp) if exp and Path(exp).exists() else j.dir / c["file"]
+    if platform.system() == "Darwin":
+        subprocess.Popen(["open", "-R", str(path)])  # select the file in Finder, ready to drag
+    return {"path": str(path)}
+
+
+@app.post("/api/open-upload/{platform_id}")
+def open_upload(platform_id: str):
+    url = UPLOAD_PAGES.get(platform_id)
+    if not url:
+        raise HTTPException(404)
+    if platform.system() == "Darwin":
+        subprocess.Popen(["open", url])  # the user's own browser, where they're logged in
+    return {"url": url}
+
+
+@app.post("/api/clipboard")
+def clipboard(body: dict):
+    text = str(body.get("text", ""))
+    if platform.system() != "Darwin" or not shutil.which("pbcopy"):
+        raise HTTPException(501, "Clipboard helper only on macOS")
+    subprocess.run(["pbcopy"], input=text.encode(), check=True)
+    return {"ok": True}

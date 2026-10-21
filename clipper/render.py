@@ -81,14 +81,16 @@ def _split_frame(frame, cam):
 
 
 def render_clip(src, words, clip, out_path, work_dir, layout, ctx, label):
+    """Factory output: <name>_base.mp4 (reframed, no overlays) for Packaging to build on,
+    and <name>.mp4 with the default captions and hook."""
     seg = work_dir / f"{out_path.stem}_seg.mp4"
+    base = work_dir / f"{out_path.stem}_base.mp4"
     ctx.stage("render", None, f"{label}: cutting")
     cut_segment(src, clip["start"], clip["end"], seg)
 
     ctx.stage("render", None, f"{label}: finding faces")
     plan = reframe.analyze(seg, layout, ctx)
     clip["layout"] = plan["mode"]
-    caps = captions.Captions(words, clip["start"], clip["end"], clip.get("hook", ""), plan["mode"])
 
     OW, OH = config.OUT_W, config.OUT_H
     cmd = ["ffmpeg", "-y", "-v", "error",
@@ -96,8 +98,8 @@ def render_clip(src, words, clip, out_path, work_dir, layout, ctx, label):
            "-i", str(seg), "-map", "0:v"]
     if has_audio(seg):
         cmd += ["-map", "1:a", "-c:a", "copy"]
-    cmd += [*_encoder_args(), "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart", "-shortest", str(out_path)]
+    # Base is an intermediate that gets decoded again, so keep it high quality.
+    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p", "-shortest", str(base)]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
     cap = cv2.VideoCapture(str(seg))
@@ -119,11 +121,10 @@ def render_clip(src, words, clip, out_path, work_dir, layout, ctx, label):
                 x0 = int(round(x - cw / 2))
                 x0 = max(0, min(frame.shape[1] - cw, x0))
                 out = cv2.resize(frame[:, x0:x0 + cw], (OW, OH), interpolation=cv2.INTER_LINEAR)
-            caps.apply(out, i / plan["fps"])
             proc.stdin.write(out.tobytes())
             i += 1
             if i % 15 == 0:
-                ctx.stage("render", i / max(n, 1), f"{label}: rendering {plan['mode']} ({i}/{n} frames)")
+                ctx.stage("render", i / max(n, 1) * 0.6, f"{label}: reframing {plan['mode']} ({i}/{n} frames)")
                 ctx.check()
     finally:
         cap.release()
@@ -136,3 +137,8 @@ def render_clip(src, words, clip, out_path, work_dir, layout, ctx, label):
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg failed: {err[-800:]}")
     seg.unlink(missing_ok=True)
+
+    from . import packaging
+    spec = packaging.default_spec(clip)
+    packaging.compose(base, packaging.clip_words(words, clip), spec, clip["layout"], out_path,
+                      lambda f: (ctx.stage("render", 0.6 + 0.4 * f, f"{label}: captions"), ctx.check()))

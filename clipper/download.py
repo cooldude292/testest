@@ -116,7 +116,8 @@ def fetch(source, job_dir, section, ctx):
             offset = _hls_slice(info, rng, job_dir, out, ctx)
             if offset is not None:
                 return out, info.get("title") or "video", {"offset": offset, "twitch_id": _twitch_id(info),
-                                                          "vod_duration": info.get("duration")}
+                                                          "vod_duration": info.get("duration"),
+                                                          "channel": info.get("uploader") or info.get("channel")}
     info = _extract_with_cookie_fallback(source, opts, ctx)
     if info.get("_type") == "playlist" and info.get("entries"):
         info = info["entries"][0]
@@ -130,7 +131,7 @@ def fetch(source, job_dir, section, ctx):
             raise RuntimeError("yt-dlp finished but no file showed up")
         path = candidates[-1]
     meta = {"offset": rng[0] if rng else 0.0, "twitch_id": _twitch_id(info),
-            "vod_duration": info.get("duration")}
+            "vod_duration": info.get("duration"), "channel": info.get("uploader") or info.get("channel")}
     return path, info.get("title") or "video", meta
 
 

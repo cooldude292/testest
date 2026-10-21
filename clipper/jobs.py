@@ -10,7 +10,7 @@ import traceback
 import uuid
 from pathlib import Path
 
-from . import chat, config, download, moments, render, setup_tasks, sources, transcribe
+from . import chat, config, download, moments, packaging, render, setup_tasks, sources, transcribe
 from .util import ffmpeg
 
 STAGES = ["download", "audio", "chat", "transcribe", "moments", "render"]
@@ -43,13 +43,16 @@ class Job:
     def dir(self):
         return config.JOBS_DIR / self.id
 
-    def to_dict(self, log_tail=12):
+    def to_dict(self, log_tail=12, light=False):
+        clips = self.clips
+        if light:  # the UI polls every second; edited word lists are fetched per unit instead
+            clips = [{**c, "package": {**c["package"], "words": None}} if c.get("package") else c for c in clips]
         return {
             "id": self.id, "order": self.order, "export_dir": self.export_dir,
             "source": self.source, "options": self.options, "title": self.title,
             "status": self.status, "stage": self.stage, "progress": self.progress,
             "message": self.message, "log": self.log_lines[-log_tail:] if log_tail else self.log_lines,
-            "clips": self.clips, "error": self.error, "created": self.created,
+            "clips": clips, "error": self.error, "created": self.created,
         }
 
     def save(self, force=False):
@@ -93,9 +96,11 @@ class Manager:
     def __init__(self):
         self.jobs = {}
         self.q = queue.Queue()
+        self.pq = queue.Queue()   # packaging line, separate so edits don't wait behind factory orders
         self.lock = threading.Lock()
         self._load()
         threading.Thread(target=self._worker, daemon=True).start()
+        threading.Thread(target=self._package_worker, daemon=True).start()
 
     def _load(self):
         for f in sorted(config.JOBS_DIR.glob("*/job.json")):
@@ -159,7 +164,106 @@ class Manager:
 
     def list(self):
         with self.lock:
-            return sorted((j.to_dict() for j in self.jobs.values()), key=lambda d: -d["created"])
+            return sorted((j.to_dict(light=True) for j in self.jobs.values()), key=lambda d: -d["created"])
+
+    # ---- packaging and shipping, per unit (job id + clip index) ----
+
+    def unit(self, jid, idx):
+        j = self.jobs.get(jid)
+        if not j or not 0 <= idx < len(j.clips):
+            raise KeyError(f"{jid}/{idx}")
+        return j, j.clips[idx]
+
+    def unit_words(self, j, c):
+        return packaging.clip_words(json.loads((j.dir / "transcript.json").read_text()), c)
+
+    def unit_meta(self, j):
+        try:
+            return json.loads((j.dir / "download.json").read_text()).get("meta", {})
+        except Exception:
+            return {}
+
+    def save_package(self, jid, idx, spec):
+        j, c = self.unit(jid, idx)
+        c["package"] = packaging.clean_spec(spec, c["end"] - c["start"])
+        j.save(force=True)
+        return c["package"]
+
+    def queue_package(self, jid, idx):
+        j, c = self.unit(jid, idx)
+        if not (j.dir / c["file"].replace(".mp4", "_base.mp4")).exists():
+            raise ValueError("This clip was made before Packaging existed. Re-run its work order.")
+        c.setdefault("package", packaging.default_spec(c))
+        c["pkg"] = {"status": "queued", "progress": 0.0, "message": "Waiting for the packaging line"}
+        j.save(force=True)
+        self.pq.put((jid, idx))
+
+    def _package_worker(self):
+        while True:
+            jid, idx = self.pq.get()
+            try:
+                j, c = self.unit(jid, idx)
+            except KeyError:
+                continue
+            st = c["pkg"]
+            st.update(status="running", progress=0.0, message="Packaging")
+            try:
+                base = j.dir / c["file"].replace(".mp4", "_base.mp4")
+                out = j.dir / c["file"].replace(".mp4", "_pkg.mp4")
+
+                def prog(f):
+                    st["progress"], st["message"] = f, f"Rendering {int(f * 100)}%"
+
+                packaging.compose(base, self.unit_words(j, c), c["package"], c.get("layout", "track"), out, prog)
+                dest = config.EXPORT_DIR / "Ready to Ship"
+                dest.mkdir(parents=True, exist_ok=True)
+                name = _safe(f"WO-{j.order}-{idx + 1:02d} {c['package']['hook'] or c.get('title') or 'clip'}", 90) + ".mp4"
+                shutil.copy2(out, dest / name)
+                st.update(status="done", progress=1.0, message="Packaged", file=out.name, export=str(dest / name),
+                          at=time.time())
+                self._write_ship_notes(j, c)
+            except Exception as ex:
+                st.update(status="failed", message=f"{type(ex).__name__}: {ex}")
+            j.save(force=True)
+
+    def make_kit(self, jid, idx, campaign):
+        j, c = self.unit(jid, idx)
+        meta = self.unit_meta(j)
+        src = j.source.lower()
+        platform = "Twitch" if "twitch.tv" in src else "YouTube" if "youtu" in src else "Kick" if "kick.com" in src else ""
+        hook = (c.get("package") or {}).get("hook") or c.get("hook") or ""
+        kit = packaging.ship_kit(hook, c.get("title", ""), c.get("text", ""), meta.get("channel", ""), platform, campaign)
+        c.setdefault("ship", {"kit": {}, "platforms": {}})["kit"] = kit
+        self._write_ship_notes(j, c)
+        j.save(force=True)
+        return kit
+
+    def update_ship(self, jid, idx, data):
+        j, c = self.unit(jid, idx)
+        ship = c.setdefault("ship", {"kit": {}, "platforms": {}})
+        for k, v in (data.get("kit") or {}).items():
+            if k in packaging.SHIP_SCHEMA["properties"]:
+                ship["kit"][k] = str(v)[:5000]
+        for p, v in (data.get("platforms") or {}).items():
+            if p in ("tiktok", "youtube", "instagram", "x"):
+                cur = ship["platforms"].setdefault(p, {})
+                if "status" in v and v["status"] in ("ready", "posted", "skipped"):
+                    cur["status"] = v["status"]
+                    cur["at"] = time.time()
+                if "url" in v:
+                    cur["url"] = str(v["url"])[:500]
+        self._write_ship_notes(j, c)
+        j.save(force=True)
+        return ship
+
+    def _write_ship_notes(self, j, c):
+        """A text file next to the packaged video, so the copy is right there when uploading from Finder."""
+        exp = (c.get("pkg") or {}).get("export")
+        kit = (c.get("ship") or {}).get("kit")
+        if not exp or not kit:
+            return
+        lines = [f"{k.upper()}\n{v}\n" for k, v in kit.items() if v]
+        Path(exp).with_suffix(".txt").write_text("\n".join(lines))
 
     def _worker(self):
         while True:
@@ -167,11 +271,15 @@ class Manager:
             j = self.jobs.get(jid)
             if not j or j.status != "queued":
                 continue
+            waited = 0
             while not setup_tasks.ready():
                 j.message = "Waiting for setup to finish (models downloading)"
                 if j.cancel_requested:
                     break
+                if waited % 20 == 0 and any(st["status"] == "error" for st in setup_tasks.state.values()):
+                    setup_tasks.start()  # e.g. Ollama came up after we checked; don't wait on a manual retry
                 time.sleep(1)
+                waited += 1
             if j.cancel_requested:
                 j.status, j.message = "cancelled", "Cancelled"
                 j.save(force=True)

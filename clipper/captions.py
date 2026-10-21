@@ -21,6 +21,8 @@ MAX_TEXT_W = 960
 WHITE = (255, 255, 255)
 YELLOW = (255, 215, 0)
 BLACK = (0, 0, 0)
+HIGHLIGHTS = {"yellow": YELLOW, "green": (57, 255, 20), "red": (255, 59, 48), "cyan": (0, 229, 255),
+              "pink": (255, 64, 160), "white": WHITE}
 
 
 def _font(size, weight="Black"):
@@ -71,10 +73,11 @@ def _blend(frame, ov, x, y):
 
 
 class Captions:
-    def __init__(self, words, clip_start, clip_end, hook="", layout="track"):
+    def __init__(self, words, clip_start, clip_end, hook="", layout="track", show_captions=True, color="yellow"):
         # Split layout has a face in the top pane, so the hook sits on the seam instead.
         self.split = layout == "split"
         self.cap_top = 1420 if self.split else CAP_TOP
+        self.hi_color = HIGHLIGHTS.get(color, YELLOW)
         dur = clip_end - clip_start
         local = []
         for w in words:
@@ -86,7 +89,7 @@ class Captions:
                               "e": min(dur, w["e"] - clip_start)})
 
         self.events = []  # (start, end, [words], highlighted index)
-        chunks = _chunks(local)
+        chunks = _chunks(local) if show_captions else []
         for ci, ch in enumerate(chunks):
             chunk_end = ch[-1]["e"]
             if ci + 1 < len(chunks) and chunks[ci + 1][0]["s"] - chunk_end < 0.5:
@@ -150,7 +153,7 @@ class Captions:
             for i in idxs:
                 f = self.font_hi if i == hi else self.font
                 d.text((x, base), words[i], font=f, anchor="ls",
-                       fill=(YELLOW if i == hi else WHITE) + (255,),
+                       fill=(self.hi_color if i == hi else WHITE) + (255,),
                        stroke_width=stroke, stroke_fill=BLACK + (255,))
                 x += widths[i] + space
         return _to_bgra(img)

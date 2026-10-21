@@ -20,20 +20,24 @@
   </header>
 
   <nav class="tabs">
-    <a href="#workbench" data-page="workbench"><span class="fk">F1</span>Workbench</a>
+    <a href="#discovery" data-page="discovery"><span class="fk">F1</span>Discovery</a>
+    <span class="flow">▸</span>
     <a href="#factory" data-page="factory"><span class="fk">F2</span>Factory <span class="n" id="nav-factory"></span></a>
-    <a href="#inventory" data-page="inventory"><span class="fk">F3</span>Inventory <span class="n" id="nav-inventory"></span></a>
-    <a href="#system" data-page="system"><span class="fk">F4</span>System <span class="n" id="nav-system"></span></a>
+    <span class="flow">▸</span>
+    <a href="#packaging" data-page="packaging"><span class="fk">F3</span>Packaging <span class="n" id="nav-packaging"></span></a>
+    <span class="flow">▸</span>
+    <a href="#shipping" data-page="shipping"><span class="fk">F4</span>Shipping <span class="n" id="nav-shipping"></span></a>
+    <a href="#system" data-page="system" class="sys-tab"><span class="fk">F5</span>System <span class="n" id="nav-system"></span></a>
     <div class="right"><button class="btn minimal" id="btn-file">Open file…</button><input type="file" id="file-input" accept="video/*" hidden>
       <button class="btn minimal" id="btn-exports">Exports</button></div>
   </nav>
 
   <div class="stage">
-    <!-- WORKBENCH -->
-    <section class="page" id="page-workbench">
+    <!-- DISCOVERY -->
+    <section class="page" id="page-discovery">
       <div class="grid wb-empty" id="wb-empty">
         <div class="panel">
-          <div class="ph"><span class="id">WB-00</span>Source log<span class="right faint mono" id="recent-n"></span></div>
+          <div class="ph"><span class="id">DS-00</span>Source log<span class="right faint mono" id="recent-n"></span></div>
           <div class="pb" id="recent"></div>
         </div>
         <div class="panel">
@@ -56,7 +60,7 @@
         </div>
 
         <div class="panel">
-          <div class="ph"><span class="id">WB-01</span>Source monitor<span class="right faint mono" id="mon-fmt"></span></div>
+          <div class="ph"><span class="id">DS-01</span>Source monitor<span class="right faint mono" id="mon-fmt"></span></div>
           <div class="monitor">
             <video id="video" playsinline preload="metadata"></video>
             <div class="ovl" id="ovl-src">SRC</div><div class="ovl r" id="ovl-tc">00:00:00</div>
@@ -77,13 +81,13 @@
         </div>
 
         <div class="panel">
-          <div class="ph"><span class="id">WB-02</span>Signal timeline<span class="right"><span class="mono t2" id="tl-signal"></span><span class="mono faint" id="tl-status"></span></span></div>
+          <div class="ph"><span class="id">DS-02</span>Signal timeline<span class="right"><span class="mono t2" id="tl-signal"></span><span class="mono faint" id="tl-status"></span></span></div>
           <div class="tlwrap"><canvas class="tl" id="tl"></canvas></div>
         </div>
 
         <div class="side-col">
           <div class="panel">
-            <div class="ph"><span class="id">WB-03</span>Work order<span class="right"><span class="tag" id="wo-state">NO RANGE</span></span></div>
+            <div class="ph"><span class="id">DS-03</span>Work order<span class="right"><span class="tag" id="wo-state">NO RANGE</span></span></div>
             <div class="kv">
               <div>In</div><div><input class="input mono" id="sel-in" placeholder="--:--:--"></div>
               <div>Out</div><div><input class="input mono" id="sel-out" placeholder="--:--:--"></div>
@@ -99,7 +103,7 @@
               <div class="faint" style="margin-top:6px;font-size:10.5px">Only the selected range is pulled, transcribed and analyzed.</div></div>
           </div>
           <div class="panel">
-            <div class="ph"><span class="id">WB-04</span>Signal peaks<span class="right faint mono" id="hot-src"></span></div>
+            <div class="ph"><span class="id">DS-04</span>Signal peaks<span class="right faint mono" id="hot-src"></span></div>
             <div class="pb" id="hot"></div>
           </div>
         </div>
@@ -127,21 +131,91 @@
       </div>
     </section>
 
-    <!-- INVENTORY -->
-    <section class="page" id="page-inventory">
+    <!-- PACKAGING -->
+    <section class="page" id="page-packaging">
+      <div class="grid pkg">
+        <div class="panel">
+          <div class="ph"><span class="id">PK-01</span>Units<span class="right faint mono" id="pk-count"></span></div>
+          <div class="filters">
+            <input class="input" id="pk-q" placeholder="Filter" style="flex:1">
+            <select class="input" id="pk-order"><option value="">ALL ORDERS</option></select>
+          </div>
+          <div class="pb" id="pk-units"></div>
+        </div>
+
+        <div class="panel">
+          <div class="ph"><span class="id">PK-02</span>Edit bay<span class="right mono data" id="pk-id"></span></div>
+          <div class="bay" id="bay">
+            <div class="empty" id="bay-empty"><b>NO UNIT LOADED</b>Pick a unit on the left to package it.</div>
+            <div class="bay-main" id="bay-main" style="display:none">
+              <div class="bay-stage" id="bay-stage">
+                <div class="phone" id="phone">
+                  <div class="phone-fx" id="phone-fx"><video id="pv" playsinline preload="auto"></video></div>
+                  <div class="pv-hook" id="pv-hook"></div>
+                  <div class="pv-cap" id="pv-cap"></div>
+                  <div class="pv-flash" id="pv-flash"></div>
+                </div>
+              </div>
+              <div class="transport">
+                <button class="btn" id="pv-play">PLAY</button>
+                <span class="tc" id="pv-tc">00:00.0 <small>/ 00:00.0</small></span>
+                <span style="flex:1"></span>
+                <span class="muted mono" style="font-size:10.5px">SOUND</span>
+                <select class="input" id="pv-sound" style="width:140px"></select>
+                <button class="btn amber" id="pv-add">DROP AT PLAYHEAD <span class="key">B</span></button>
+              </div>
+              <div class="track-wrap">
+                <div class="track" id="track"><div class="track-trim l" id="trim-l"></div><div class="track-trim r" id="trim-r"></div><div class="track-ph" id="track-ph"></div></div>
+                <div class="track-words" id="track-words"></div>
+              </div>
+              <div class="acts" style="border-top:1px solid var(--line)">
+                <button class="btn primary" id="pk-suggest">AUTO-PLACE SOUNDS</button>
+                <button class="btn" id="pk-clear">CLEAR SOUNDS</button>
+                <span style="flex:1"></span>
+                <span class="mono faint" id="pk-saved"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="ph"><span class="id">PK-03</span>Properties</div>
+          <div class="pb" id="props">
+            <div class="sect">Selected hit</div>
+            <div id="hit-props"><div class="empty" style="padding:12px">Click a marker on the track.</div></div>
+            <div class="sect">Sound library<span style="flex:1"></span><button class="btn minimal" id="sfx-import">IMPORT…</button><button class="btn minimal" id="sfx-folder">FOLDER</button><input type="file" id="sfx-file" accept="audio/*" hidden multiple></div>
+            <div id="sfx-lib"></div>
+            <div class="sect">Text</div>
+            <div class="kv">
+              <div>Hook</div><div style="display:flex;gap:6px"><input type="checkbox" id="pk-hook-on"><input class="input" id="pk-hook" style="flex:1"></div>
+              <div>Captions</div><div style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="pk-cap-on"><select class="input" id="pk-color" style="flex:1">
+                <option value="yellow">YELLOW</option><option value="green">GREEN</option><option value="red">RED</option><option value="cyan">CYAN</option><option value="pink">PINK</option><option value="white">WHITE</option></select></div>
+              <div>Trim</div><div style="display:flex;gap:6px"><input class="input mono" id="pk-in" style="width:50%"><input class="input mono" id="pk-out" style="width:50%"></div>
+            </div>
+            <div class="sect">Transcript<span style="flex:1"></span><button class="btn minimal" id="pk-apply-text">APPLY EDITS</button></div>
+            <div style="padding:0 10px 10px"><textarea class="input" id="pk-text" rows="6" style="width:100%;height:auto;padding:6px;line-height:1.45;resize:vertical"></textarea>
+              <div class="faint" style="font-size:10.5px;margin-top:4px">Fix misheard words here. Timing is kept for unchanged words.</div></div>
+          </div>
+          <div class="pad" style="border-top:1px solid var(--line)">
+            <button class="btn amber wide" id="pk-render">RENDER PACKAGE ▸</button>
+            <div class="meter" id="pk-meter" style="margin-top:6px"><i></i></div>
+            <div class="mono t2" id="pk-status" style="font-size:10.5px;margin-top:4px">—</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SHIPPING -->
+    <section class="page" id="page-shipping">
       <div class="grid split">
         <div class="panel">
-          <div class="ph"><span class="id">IN-01</span>Finished goods<span class="right faint mono" id="inv-count"></span></div>
-          <div class="filters">
-            <input class="input" id="inv-q" placeholder="Filter hooks, titles, sources" style="width:240px">
-            <select class="input" id="inv-sort"><option value="new">SORT: NEWEST</option><option value="score">SORT: SCORE</option></select>
-            <select class="input" id="inv-order"><option value="">ALL ORDERS</option></select>
-          </div>
-          <div class="pb" id="clips"></div>
+          <div class="ph"><span class="id">SH-01</span>Shipping manifest<span class="right"><span class="mono faint">CAMPAIGN TAGS</span>
+            <input class="input" id="sh-campaign" placeholder="e.g. @brand #ad" style="width:220px"><button class="btn" id="sh-campaign-save">SAVE</button></span></div>
+          <div class="pb" id="sh-list"></div>
         </div>
         <div class="panel">
-          <div class="ph"><span class="id">IN-02</span>Unit inspector<span class="right mono data" id="unit-id"></span></div>
-          <div class="pb" id="unit"><div class="empty"><b>NO UNIT SELECTED</b>Select a clip to review it.</div></div>
+          <div class="ph"><span class="id">SH-02</span>Shipment<span class="right mono data" id="sh-id"></span></div>
+          <div class="pb" id="sh-detail"><div class="empty"><b>NOTHING SELECTED</b>Packaged units appear here, ready to post.</div></div>
         </div>
       </div>
     </section>

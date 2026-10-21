@@ -24,12 +24,14 @@ const scoreCls = s => s >= 70 ? "hi" : s >= 50 ? "mid" : "lo";
 const LAYOUTS = {track: "FOLLOW SPEAKER", split: "FACECAM / GAME", zoom: "GAMEPLAY ZOOM", fit: "FULL FRAME", center: "CENTER CROP"};
 
 /* ---------------- frame: routing, clock, keys ---------------- */
-const PAGES = ["workbench", "factory", "inventory", "system"];
+const PAGES = ["discovery", "factory", "packaging", "shipping", "system"];
 function route() {
-  const p = PAGES.includes(location.hash.slice(1)) ? location.hash.slice(1) : "workbench";
+  const p = PAGES.includes(location.hash.slice(1)) ? location.hash.slice(1) : "discovery";
   $$(".page").forEach(el => el.classList.toggle("on", el.id === "page-" + p));
   $$(".tabs a").forEach(a => a.classList.toggle("on", a.dataset.page === p));
-  if (p === "workbench") requestAnimationFrame(drawTimeline);
+  if (p === "discovery") requestAnimationFrame(drawTimeline);
+  if (p === "packaging") requestAnimationFrame(fitPhone);
+  if (p !== "packaging" && pv && !pv.paused) pv.pause();
 }
 const go = p => { location.hash = "#" + p; };
 window.addEventListener("hashchange", route);
@@ -41,12 +43,13 @@ function tick() {
 setInterval(tick, 1000); tick();
 
 /* ---------------- command line ---------------- */
-const HELP = "URL or file path = load source · WB FAC INV SYS = switch module · IN / OUT = mark range · SEND = dispatch · WO 1001 = open order";
+const HELP = "URL or file path = load source · DIS FAC PKG SHIP SYS = switch module · IN / OUT = mark range · SEND = dispatch · WO 1001 = open order";
 function runCommand(raw) {
   const s = raw.trim(); if (!s) return;
   const up = s.toUpperCase(), [head, ...rest] = up.split(/\s+/);
   if (/^https?:\/\//i.test(s) || s.startsWith("/") || s.startsWith("~")) return loadSource(s);
-  const nav = {WB: "workbench", WORKBENCH: "workbench", FAC: "factory", FACTORY: "factory", INV: "inventory", INVENTORY: "inventory", SYS: "system", SYSTEM: "system"};
+  const nav = {DIS: "discovery", DISC: "discovery", DISCOVERY: "discovery", WB: "discovery", FAC: "factory", FACTORY: "factory",
+    PKG: "packaging", PACK: "packaging", PACKAGING: "packaging", SHIP: "shipping", SHIPPING: "shipping", SYS: "system", SYSTEM: "system"};
   if (nav[head]) return go(nav[head]);
   if (head === "IN" && src) return markIn();
   if (head === "OUT" && src) return markOut();
@@ -61,12 +64,13 @@ $("#cmd").addEventListener("keydown", e => { if (e.key === "Enter") { runCommand
 $("#cmd-go").onclick = () => runCommand($("#cmd").value);
 
 document.addEventListener("keydown", e => {
-  const fk = {F1: "workbench", F2: "factory", F3: "inventory", F4: "system"}[e.key];
+  const fk = {F1: "discovery", F2: "factory", F3: "packaging", F4: "shipping", F5: "system"}[e.key];
   if (fk) { e.preventDefault(); return go(fk); }
-  if ((e.metaKey || e.ctrlKey) && ["1", "2", "3", "4"].includes(e.key)) { e.preventDefault(); return go(PAGES[+e.key - 1]); }
+  if ((e.metaKey || e.ctrlKey) && ["1", "2", "3", "4", "5"].includes(e.key)) { e.preventDefault(); return go(PAGES[+e.key - 1]); }
   const typing = ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName);
   if (e.key === "/" && !typing) { e.preventDefault(); $("#cmd").focus(); $("#cmd").select(); return; }
-  if (typing || !src || !$("#page-workbench").classList.contains("on")) return;
+  if (!typing && $("#page-packaging").classList.contains("on")) return bayKey(e);
+  if (typing || !src || !$("#page-discovery").classList.contains("on")) return;
   const k = e.key.toLowerCase();
   if (k === " ") { e.preventDefault(); video.paused ? video.play() : video.pause(); }
   else if (k === "i") markIn();
@@ -77,12 +81,12 @@ document.addEventListener("keydown", e => {
   else if (k === "arrowright") seek(video.currentTime + (e.shiftKey ? 60 : 5));
 });
 
-/* ---------------- workbench: source ---------------- */
+/* ---------------- discovery: source ---------------- */
 const video = $("#video");
 let src = null, hls = null, heat = null, sel = null, heatTimer = null;
 
 async function loadSource(source) {
-  go("workbench");
+  go("discovery");
   $("#cmd").value = source;
   toast("LOADING SOURCE…");
   try {
@@ -160,7 +164,7 @@ async function renderRecent() {
     : `<div class="empty"><b>NO SOURCES ON RECORD</b>Paste a stream or video URL into the command line and press GO.</div>`;
   $$("#recent tr.click").forEach(tr => tr.ondblclick = tr.onclick = () => loadSource(list[+tr.dataset.i].source));
 }
-$("#keys").innerHTML = [["/", "Command line"], ["F1–F4", "Switch module"], ["Space", "Play / pause"], ["I / O", "Mark in / out"],
+$("#keys").innerHTML = [["/", "Command line"], ["F1–F5", "Switch module"], ["B", "Drop sound (Packaging)"], ["Space", "Play / pause"], ["I / O", "Mark in / out"],
   ["J / L", "−10 s / +10 s"], ["← / →", "−5 s / +5 s (⇧ 60 s)"]].map(([k, v]) => `<div><span class="key">${k}</span></div><div class="t2">${v}</div>`).join("");
 
 async function openFile() {
@@ -177,7 +181,7 @@ $("#file-input").onchange = async e => {
   try {
     const r = await fetch("/api/upload", {method: "POST", body: fd}); const d = await r.json();
     if (!r.ok) throw new Error(d.detail || "Import failed");
-    src = d; go("workbench"); showSource();
+    src = d; go("discovery"); showSource();
   } catch (err) { toast(err.message, true); }
   e.target.value = "";
 };
@@ -386,7 +390,7 @@ function renderOrderDetail() {
     <div style="padding:0 10px 8px"><div class="meter ${j.status === "done" ? "green" : ""} ${j.status === "running" && j.progress == null ? "indet" : ""}"><i style="width:${pct.toFixed(1)}%"></i></div>
       <div class="mono t2" style="margin-top:5px;font-size:11px">${esc(j.message)}</div></div>
     <div class="acts">
-      ${j.status === "done" ? `<button class="btn primary" data-act="inv">VIEW ${j.clips.length} UNIT${j.clips.length === 1 ? "" : "S"}</button><button class="btn" data-act="reveal">REVEAL IN FINDER</button>` : ""}
+      ${j.status === "done" ? `<button class="btn primary" data-act="inv">PACKAGE ${j.clips.length} UNIT${j.clips.length === 1 ? "" : "S"} ▸</button><button class="btn" data-act="reveal">REVEAL IN FINDER</button>` : ""}
       ${j.status === "running" || j.status === "queued" ? `<button class="btn" data-act="cancel">CANCEL ORDER</button>` : ""}
       ${j.status === "failed" || j.status === "cancelled" ? `<button class="btn amber" data-act="retry">RE-RUN</button>` : ""}
       ${j.status !== "running" && j.status !== "queued" ? `<button class="btn minimal" data-act="del">DELETE</button>` : ""}
@@ -397,7 +401,7 @@ function renderOrderDetail() {
   $$("[data-act]", box).forEach(b => b.onclick = async () => {
     const a = b.dataset.act, id = j.id;
     try {
-      if (a === "inv") { $("#inv-order").value = id; go("inventory"); renderInventory(true); return; }
+      if (a === "inv") { $("#pk-order").value = id; go("packaging"); renderUnits(true); return; }
       if (a === "reveal") { const r = await api(`/api/orders/${id}/reveal`, {method: "POST"}); if (!navigator.platform.startsWith("Mac")) toast(r.path); return; }
       if (a === "cancel") await api(`/api/orders/${id}/cancel`, {method: "POST"});
       if (a === "retry") await api(`/api/orders/${id}/retry`, {method: "POST"});
@@ -411,71 +415,431 @@ function renderOrderDetail() {
   });
 }
 
-/* ---------------- inventory ---------------- */
-let invKey = "", selUnit = null;
-const unitKey = c => `${c.job.id}/${c.file}`;
-function allClips() {
+/* ---------------- packaging ---------------- */
+const pv = $("#pv");
+const HIGHLIGHT = {yellow: "#ffd700", green: "#39ff14", red: "#ff3b30", cyan: "#00e5ff", pink: "#ff40a0", white: "#ffffff"};
+const DEFAULT_FX = {boom: "zoom", bass_drop: "zoom", scratch: "shake", glitch: "shake", error: "shake", shutter: "flash"};
+const FX_NAMES = {none: "NO VISUAL", zoom: "ZOOM PUNCH", shake: "SHAKE", flash: "FLASH"};
+let lib = [], curSound = "boom", bay = null, selHit = -1, lastT = 0, saveTimer = null, unitsKey = "";
+const ukey = (jid, idx) => `${jid}/${idx}`;
+const ftc = t => { t = Math.max(0, t || 0); return `${pad(Math.floor(t / 60))}:${(t % 60).toFixed(1).padStart(4, "0")}`; };
+const parseFtc = s => { const p = String(s).trim().split(":"); let t = 0; for (const x of p) { const v = parseFloat(x); if (isNaN(v)) return null; t = t * 60 + v; } return t; };
+const libLabel = id => (lib.find(x => x.id === id) || {label: id}).label;
+
+function allUnits() {
   const out = [];
   for (const j of jobs) j.clips.forEach((c, i) => out.push({...c, job: j, idx: i}));
   return out;
 }
-function renderInventory(force) {
-  const clips = allClips();
-  $("#nav-inventory").textContent = clips.length || "";
-  const orderSel = $("#inv-order"), cur = orderSel.value;
-  const withClips = jobs.filter(j => j.clips.length);
+function pkgState(c) {
+  const p = c.pkg || {};
+  return p.status === "done" ? ["PACKAGED", "green"] : p.status === "running" ? [`RENDER ${Math.round((p.progress || 0) * 100)}%`, "blue"] :
+    p.status === "queued" ? ["QUEUED", ""] : p.status === "failed" ? ["FAULT", "red"] : ["RAW", "amber"];
+}
+const thumbHtml = u => u.thumb ? `<img class="thumb" loading="lazy" src="/files/${encodeURIComponent(u.job.id)}/${encodeURIComponent(u.thumb)}">` : `<div class="thumb"></div>`;
+
+function renderUnits(force) {
+  const units = allUnits();
+  const raw = units.filter(u => !(u.pkg && u.pkg.status === "done")).length;
+  $("#nav-packaging").textContent = units.length ? (raw || "✓") : "";
+  const orderSel = $("#pk-order"), cur = orderSel.value, withClips = jobs.filter(j => j.clips.length);
   if (orderSel.dataset.sig !== String(withClips.length)) {
     orderSel.innerHTML = `<option value="">ALL ORDERS</option>` + withClips.map(j => `<option value="${j.id}">WO-${j.order}</option>`).join("");
     orderSel.value = cur; orderSel.dataset.sig = String(withClips.length);
   }
-  const q = $("#inv-q").value.toLowerCase(), sort = $("#inv-sort").value, ord = orderSel.value;
-  const list = clips.filter(c => (!ord || c.job.id === ord) && (!q || [c.hook, c.title, c.job.title, c.text].join(" ").toLowerCase().includes(q)));
-  list.sort(sort === "score" ? (a, b) => b.score - a.score : (a, b) => b.job.created - a.job.created || a.idx - b.idx);
-  $("#inv-count").textContent = `${list.length} / ${clips.length} UNITS`;
-  const key = list.map(unitKey).join("|") + selUnit;
-  if (key !== invKey || force) {
-    invKey = key;
-    $("#clips").innerHTML = !clips.length ? `<div class="empty"><b>NO FINISHED GOODS</b>Shipped work orders deliver their clips here.</div>` :
-      `<table class="dt"><thead><tr><th style="width:40px"></th><th style="width:52px">Score</th><th>Hook</th><th style="width:74px">Order</th>
-        <th style="width:80px">Src TC</th><th class="r" style="width:46px">Dur</th><th style="width:120px">Layout</th><th class="r" style="width:56px">Chat</th></tr></thead><tbody>
-      ${list.map(c => {
-        const thumb = c.thumb ? `<img class="thumb" loading="lazy" src="/files/${encodeURIComponent(c.job.id)}/${encodeURIComponent(c.thumb)}">` : `<div class="thumb"></div>`;
-        return `<tr class="click tall ${unitKey(c) === selUnit ? "on" : ""}" data-k="${esc(unitKey(c))}"><td>${thumb}</td>
-          <td><span class="score ${scoreCls(c.score)}">${c.score}</span></td>
-          <td><div class="hook" style="overflow:hidden;text-overflow:ellipsis">${esc(c.hook || c.title)}</div><div class="faint" style="font-size:11px;overflow:hidden;text-overflow:ellipsis">${esc(c.title)}</div></td>
-          <td class="data">WO-${c.job.order}</td><td class="mono t2">${tc(c.abs_start != null ? c.abs_start : c.start)}</td>
-          <td class="r mono">${Math.round(c.end - c.start)}s</td><td class="mono t2" style="font-size:10.5px">${LAYOUTS[c.layout] || "—"}</td>
-          <td class="r mono ${c.peak_chat >= 1.8 ? "data" : "faint"}">${c.peak_chat ? c.peak_chat.toFixed(1) + "×" : "—"}</td></tr>`;
-      }).join("")}</tbody></table>`;
-    $$("#clips tr.click").forEach(tr => tr.onclick = () => { selUnit = tr.dataset.k; renderInventory(true); renderUnit(); });
+  const q = $("#pk-q").value.toLowerCase(), ord = orderSel.value;
+  const list = units.filter(u => (!ord || u.job.id === ord) && (!q || [u.hook, u.title, u.job.title].join(" ").toLowerCase().includes(q)))
+    .sort((a, b) => b.job.created - a.job.created || a.idx - b.idx);
+  $("#pk-count").textContent = `${list.length} UNITS`;
+  const sel = bay ? ukey(bay.jid, bay.idx) : "";
+  const key = JSON.stringify(list.map(u => [ukey(u.job.id, u.idx), pkgState(u)[0], u.hook])) + sel;
+  if (key !== unitsKey || force) {
+    unitsKey = key;
+    $("#pk-units").innerHTML = !units.length ? `<div class="empty"><b>NO UNITS</b>Finished factory clips land here.</div>` :
+      `<table class="dt"><thead><tr><th style="width:38px"></th><th style="width:34px">Sc</th><th>Unit</th><th style="width:92px">State</th></tr></thead><tbody>
+      ${list.map(u => { const [lab, cls] = pkgState(u);
+        return `<tr class="click tall ${ukey(u.job.id, u.idx) === sel ? "on" : ""}" data-j="${u.job.id}" data-i="${u.idx}"><td>${thumbHtml(u)}</td>
+          <td><span class="score ${scoreCls(u.score)}">${u.score}</span></td>
+          <td><div class="hook" style="overflow:hidden;text-overflow:ellipsis">${esc((u.package && u.package.hook) || u.hook || u.title)}</div>
+            <div class="faint mono" style="font-size:10.5px">WO-${u.job.order} · ${Math.round(u.end - u.start)}s</div></td>
+          <td><span class="tag ${cls}">${lab}</span></td></tr>`; }).join("")}</tbody></table>`;
+    $$("#pk-units tr.click").forEach(tr => tr.onclick = () => openUnit(tr.dataset.j, +tr.dataset.i));
   }
-  if (!selUnit && list.length) { selUnit = unitKey(list[0]); renderInventory(true); renderUnit(); }
+  if (!bay && list.length && $("#page-packaging").classList.contains("on")) openUnit(list[0].job.id, list[0].idx);
 }
-["#inv-q", "#inv-sort", "#inv-order"].forEach(id => $(id).addEventListener("input", () => renderInventory(true)));
+["#pk-q", "#pk-order"].forEach(id => $(id).addEventListener("input", () => renderUnits(true)));
 
-function renderUnit() {
-  const c = allClips().find(x => unitKey(x) === selUnit);
-  const box = $("#unit");
-  if (!c) { $("#unit-id").textContent = ""; box.innerHTML = `<div class="empty"><b>NO UNIT SELECTED</b>Select a clip to review it.</div>`; return; }
-  const url = `/files/${encodeURIComponent(c.job.id)}/${encodeURIComponent(c.file)}`;
-  const poster = c.thumb ? ` poster="/files/${encodeURIComponent(c.job.id)}/${encodeURIComponent(c.thumb)}"` : "";
-  $("#unit-id").textContent = `WO-${c.job.order} / ${String(c.idx + 1).padStart(2, "0")}`;
-  box.innerHTML = `<div class="clipview"><video src="${url}"${poster} controls playsinline preload="metadata"></video></div>
-    <div class="kv">
-      <div>Hook</div><div class="hook sel-text">${esc(c.hook || c.title)}</div>
-      <div>Title</div><div class="sel-text">${esc(c.title)}</div>
-      <div>Score</div><div><span class="score ${scoreCls(c.score)}">${c.score}</span> <span class="mono faint">LLM ${c.llm_score ?? "—"} · RANK ${c.rerank_score ?? "—"} · SIGNAL ${c.signal_score ?? "—"}</span></div>
-      <div>Rationale</div><div class="t2">${esc(c.reason)}</div>
-      <div>Source</div><div class="t2">${esc(c.job.title)}</div>
-      <div>Source TC</div><div class="data">${tc(c.abs_start ?? c.start)} – ${tc(c.abs_end ?? c.end)}</div>
-      <div>Format</div><div class="mono t2">1080×1920 · ${Math.round(c.end - c.start)}s · ${LAYOUTS[c.layout] || "—"}</div>
-      <div>Chat peak</div><div class="mono ${c.peak_chat >= 1.8 ? "data" : "t2"}">${c.peak_chat ? c.peak_chat.toFixed(1) + "× baseline" : "n/a"}</div>
-    </div>
-    <div class="acts"><a class="btn primary" href="${url}" download="${esc((c.hook || c.title || "clip").slice(0, 60))}.mp4">DOWNLOAD MP4</a>
-      <button class="btn" id="unit-reveal">REVEAL IN FINDER</button></div>
-    <div class="sect">Transcript</div><div class="t2 sel-text" style="padding:0 10px 12px;font-size:11.5px;line-height:1.55">${esc(c.text || "")}</div>`;
-  $("#unit-reveal").onclick = () => api(`/api/orders/${c.job.id}/reveal`, {method: "POST"});
+/* sound library */
+const sfxUrl = id => `/api/sfx/file/${encodeURIComponent(id)}`;
+const audioCache = {};
+function playSfx(id, vol) {
+  let a = audioCache[id];
+  if (!a) { a = audioCache[id] = new Audio(sfxUrl(id)); a.preload = "auto"; }
+  const n = a.cloneNode(); n.volume = Math.max(0, Math.min(1, vol)); n.play().catch(() => {});
 }
+async function loadLib(select) {
+  lib = await api("/api/sfx").catch(() => []);
+  if (select) curSound = select;
+  if (!lib.find(x => x.id === curSound) && lib.length) curSound = lib[0].id;
+  lib.forEach(x => { if (!audioCache[x.id]) { audioCache[x.id] = new Audio(sfxUrl(x.id)); audioCache[x.id].preload = "auto"; } });
+  renderLib();
+}
+function renderLib() {
+  $("#sfx-lib").innerHTML = lib.map(x => `<div class="sfx-row ${x.id === curSound ? "on" : ""}" data-id="${esc(x.id)}">
+    <button class="btn minimal" data-play="${esc(x.id)}" title="Preview">▶</button>
+    <div style="min-width:0"><div class="nm">${esc(x.label)} <span class="faint mono" style="font-weight:400">${x.duration ? x.duration.toFixed(1) + "s" : ""}</span></div><div class="hint">${esc(x.hint)}</div></div>
+    <span class="tag ${x.kind === "user" ? "blue" : ""}">${x.kind === "user" ? "YOURS" : "STOCK"}</span></div>`).join("");
+  $$("#sfx-lib .sfx-row").forEach(r => r.onclick = () => { curSound = r.dataset.id; renderLib(); });
+  $$("#sfx-lib [data-play]").forEach(b => b.onclick = e => { e.stopPropagation(); playSfx(b.dataset.play, 0.9); });
+  $("#pv-sound").innerHTML = lib.map(x => `<option value="${esc(x.id)}">${esc(x.label.toUpperCase())}</option>`).join("");
+  $("#pv-sound").value = curSound;
+}
+$("#pv-sound").onchange = e => { curSound = e.target.value; renderLib(); };
+$("#sfx-import").onclick = () => $("#sfx-file").click();
+$("#sfx-folder").onclick = async () => { const r = await api("/api/sfx/reveal", {method: "POST"}); if (!navigator.platform.startsWith("Mac")) toast(r.path); };
+$("#sfx-file").onchange = async e => {
+  let last = null;
+  for (const f of e.target.files) {
+    const fd = new FormData(); fd.append("file", f);
+    const r = await fetch("/api/sfx/import", {method: "POST", body: fd}); const d = await r.json().catch(() => ({}));
+    if (!r.ok) toast(d.detail || `Couldn't import ${f.name}`, true); else last = d.id;
+  }
+  e.target.value = "";
+  if (last) { await loadLib(last); toast("SOUND IMPORTED"); }
+};
+
+/* edit bay */
+function clean(w) { return w.trim().toUpperCase().replace(/^["'(\[]+|["',.;:)\]]+$/g, ""); }
+function buildEvents(words) {
+  const local = words.map(w => ({t: clean(w.w), raw: w.w, s: w.s, e: w.e})).filter(w => w.t);
+  const chunks = []; let cur = [];
+  for (const w of local) {
+    if (cur.length && (cur.length >= 3 || cur.reduce((n, x) => n + x.t.length + 1, 0) + w.t.length > 16 || w.s - cur[cur.length - 1].e > 0.4)) { chunks.push(cur); cur = []; }
+    cur.push(w);
+    if (".?!,".includes(w.raw.trim().slice(-1))) { chunks.push(cur); cur = []; }
+  }
+  if (cur.length) chunks.push(cur);
+  const ev = [];
+  chunks.forEach((ch, ci) => {
+    let end = ch[ch.length - 1].e;
+    if (ci + 1 < chunks.length && chunks[ci + 1][0].s - end < 0.5) end = chunks[ci + 1][0].s;
+    ch.forEach((w, wi) => ev.push({s: w.s, e: Math.max(wi + 1 < ch.length ? ch[wi + 1].s : end, w.s + 0.05), words: ch.map(x => x.t), hi: wi}));
+  });
+  return ev;
+}
+const bayWords = () => bay.spec.words || bay.words;
+
+async function openUnit(jid, idx) {
+  if (bay && ukey(bay.jid, bay.idx) === ukey(jid, idx)) return;
+  await flushSave();
+  let d;
+  try { d = await api(`/api/units/${jid}/${idx}`); } catch (e) { return toast(e.message, true); }
+  const j = jobs.find(x => x.id === jid);
+  bay = {jid, idx, spec: d.spec, words: d.words, dur: d.duration, layout: d.layout, order: j ? j.order : "", ok: !!d.base_url};
+  bay.events = buildEvents(bayWords());
+  selHit = -1;
+  $("#bay-empty").style.display = "none"; $("#bay-main").style.display = "";
+  $("#pk-id").textContent = `WO-${bay.order} / ${pad(idx + 1)}`;
+  if (d.base_url) { pv.src = d.base_url; pv.currentTime = bay.spec.trim[0]; } else { pv.removeAttribute("src"); }
+  $("#pk-render").disabled = !d.base_url;
+  if (!d.base_url) $("#pk-status").textContent = "Made before Packaging existed. Re-run its work order in the Factory.";
+  syncTextFields(); renderTrack(); renderHit(); renderUnits(true); fitPhone(); refreshBayStatus();
+  $("#pk-saved").textContent = "";
+}
+function syncTextFields() {
+  const s = bay.spec;
+  $("#pk-hook").value = s.hook; $("#pk-hook-on").checked = s.hook_on; $("#pk-cap-on").checked = s.captions_on;
+  $("#pk-color").value = s.color; $("#pk-in").value = ftc(s.trim[0]); $("#pk-out").value = ftc(s.trim[1]);
+  $("#pk-text").value = bayWords().map(w => w.w.trim()).join(" ");
+}
+function fitPhone() {
+  const ph = $("#phone");
+  if (!ph.offsetWidth) return;
+  ph.style.setProperty("--k", (ph.offsetWidth / 1080).toFixed(4));
+  drawOverlay(); renderTrack();
+}
+new ResizeObserver(() => fitPhone()).observe($("#bay-stage"));
+
+function hitState(t) {
+  let scale = 1, dx = 0, dy = 0, flash = 0;
+  for (const m of bay.spec.sfx) {
+    const d = t - m.t;
+    if (m.fx === "none" || d < 0 || d > 0.9) continue;
+    if (m.fx === "zoom") scale *= 1 + 0.16 * Math.min(d / 0.06, 1) * Math.exp(-Math.max(0, d - 0.06) / 0.2);
+    else if (m.fx === "shake" && d < 0.4) { const amp = 22 * (1 - d / 0.4); dx += amp * Math.sin(d * 97); dy += amp * Math.cos(d * 71); }
+    else if (m.fx === "flash" && d < 0.2) flash = Math.max(flash, 0.85 * (1 - d / 0.2));
+  }
+  return {scale, dx, dy, flash};
+}
+function drawOverlay() {
+  if (!bay) return;
+  const s = bay.spec, t = pv.currentTime || 0, k = parseFloat($("#phone").style.getPropertyValue("--k")) || 0.3;
+  const hook = $("#pv-hook");
+  hook.style.display = s.hook_on && s.hook ? "" : "none"; hook.textContent = s.hook; hook.classList.toggle("split", bay.layout === "split");
+  const cap = $("#pv-cap"); cap.classList.toggle("split", bay.layout === "split");
+  const ev = s.captions_on ? bay.events.find(e => e.s <= t && t < e.e) : null;
+  cap.innerHTML = ev ? ev.words.map((w, i) => i === ev.hi ? `<b style="color:${HIGHLIGHT[s.color]}">${esc(w)}</b>` : esc(w)).join(" ") : "";
+  const h = hitState(t);
+  $("#phone-fx").style.transform = `translate(${(h.dx * k).toFixed(2)}px, ${(h.dy * k).toFixed(2)}px) scale(${h.scale.toFixed(4)})`;
+  $("#pv-flash").style.opacity = h.flash.toFixed(3);
+}
+function updatePvTc() {
+  if (!bay) return;
+  const [a, b] = bay.spec.trim;
+  $("#pv-tc").innerHTML = `${ftc((pv.currentTime || 0) - a)} <small>/ ${ftc(b - a)}</small>`;
+  $("#track-ph").style.left = `${(pv.currentTime || 0) / bay.dur * 100}%`;
+}
+function tickPv() {
+  if (bay) {
+    const t = pv.currentTime || 0, [a, b] = bay.spec.trim;
+    if (!pv.paused) {
+      if (t >= b) { pv.pause(); pv.currentTime = a; }
+      else for (const m of bay.spec.sfx) if (m.t > lastT && m.t <= t && t - m.t < 0.25) playSfx(m.sound, m.vol);
+    }
+    lastT = t;
+    drawOverlay(); updatePvTc();
+  }
+  requestAnimationFrame(tickPv);
+}
+requestAnimationFrame(tickPv);
+pv.addEventListener("seeked", () => { lastT = pv.currentTime - 0.0001; });
+pv.addEventListener("play", () => $("#pv-play").textContent = "PAUSE");
+pv.addEventListener("pause", () => $("#pv-play").textContent = "PLAY");
+function pvToggle() {
+  if (!bay || !bay.ok) return;
+  if (!pv.paused) return pv.pause();
+  const [a, b] = bay.spec.trim;
+  if (pv.currentTime < a || pv.currentTime >= b - 0.05) pv.currentTime = a;
+  pv.play();
+}
+$("#pv-play").onclick = pvToggle;
+
+function renderTrack() {
+  if (!bay) return;
+  const tr = $("#track"), W = tr.clientWidth || 1, D = bay.dur || 1, [a, b] = bay.spec.trim;
+  $$(".mk", tr).forEach(x => x.remove());
+  bay.spec.sfx.forEach((m, i) => {
+    const el = document.createElement("div");
+    el.className = "mk" + (i === selHit ? " on" : "");
+    el.style.left = `${m.t / D * 100}%`;
+    const next = bay.spec.sfx[i + 1];   // keep labels from running into the next marker
+    if (next) el.style.maxWidth = `${Math.max(14, (next.t - m.t) / D * W - 3)}px`;
+    el.style.overflow = "hidden";
+    el.dataset.i = i;
+    el.innerHTML = `${esc(libLabel(m.sound).toUpperCase())}<small>${m.fx !== "none" ? FX_NAMES[m.fx] : ftc(m.t)}</small>`;
+    tr.appendChild(el);
+  });
+  $("#trim-l").style.width = `${a / D * 100}%`; $("#trim-r").style.width = `${(D - b) / D * 100}%`;
+  let lastX = -999;
+  $("#track-words").innerHTML = bayWords().map(w => { const x = w.s / D * W;
+    if (x - lastX < 46) return ""; lastX = x; return `<span style="left:${x.toFixed(0)}px">${esc(w.w.trim())}</span>`; }).join("");
+  updatePvTc();
+}
+let tdrag = null;
+const trackT = e => { const r = $("#track").getBoundingClientRect(); return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * bay.dur; };
+$("#track").addEventListener("pointerdown", e => {
+  if (!bay) return;
+  $("#track").setPointerCapture(e.pointerId);
+  const mk = e.target.closest(".mk");
+  if (mk) { selHit = +mk.dataset.i; tdrag = {mode: "mk", i: selHit, moved: false}; renderTrack(); renderHit(); return; }
+  if (e.target.id === "trim-l") { tdrag = {mode: "a"}; return; }
+  if (e.target.id === "trim-r") { tdrag = {mode: "b"}; return; }
+  tdrag = {mode: "seek"}; pv.currentTime = trackT(e);
+});
+$("#track").addEventListener("pointermove", e => {
+  if (!bay || !tdrag) return;
+  const t = trackT(e), s = bay.spec;
+  if (tdrag.mode === "mk") { s.sfx[tdrag.i].t = Math.round(t * 100) / 100; tdrag.moved = true; renderTrack(); }
+  else if (tdrag.mode === "a") { s.trim[0] = Math.min(t, s.trim[1] - 1); renderTrack(); }
+  else if (tdrag.mode === "b") { s.trim[1] = Math.max(t, s.trim[0] + 1); renderTrack(); }
+  else pv.currentTime = t;
+});
+$("#track").addEventListener("pointerup", () => {
+  if (!tdrag) return;
+  const m = tdrag.mode; tdrag = null;
+  if (m === "mk" || m === "a" || m === "b") { sortHits(); syncTextFields(); changed(); renderHit(); }
+});
+function sortHits() {
+  const s = bay.spec, keep = selHit >= 0 ? s.sfx[selHit] : null;
+  s.sfx.sort((x, y) => x.t - y.t);
+  selHit = keep ? s.sfx.indexOf(keep) : -1;
+}
+function addHit(t, sound) {
+  if (!bay) return;
+  const m = {t: Math.round(t * 100) / 100, sound, vol: 0.8, fx: DEFAULT_FX[sound] || "none"};
+  bay.spec.sfx.push(m); selHit = bay.spec.sfx.indexOf(m); sortHits();
+  playSfx(sound, 0.8); changed(); renderHit();
+}
+$("#pv-add").onclick = () => addHit(pv.currentTime || 0, curSound);
+function bayKey(e) {
+  if (!bay) return;
+  const k = e.key.toLowerCase();
+  if (k === " ") { e.preventDefault(); pvToggle(); }
+  else if (k === "b") addHit(pv.currentTime || 0, curSound);
+  else if ((k === "delete" || k === "backspace") && selHit >= 0) { bay.spec.sfx.splice(selHit, 1); selHit = -1; changed(); renderHit(); }
+  else if (k === "arrowleft" || k === "arrowright") {
+    e.preventDefault();
+    const dir = k === "arrowleft" ? -1 : 1;
+    if (selHit >= 0) { const m = bay.spec.sfx[selHit]; m.t = Math.max(0, Math.min(bay.dur, Math.round((m.t + dir * (e.shiftKey ? 0.5 : 0.05)) * 100) / 100)); sortHits(); changed(); renderHit(); }
+    else pv.currentTime = Math.max(0, Math.min(bay.dur, pv.currentTime + dir * (e.shiftKey ? 5 : 1)));
+  }
+}
+function renderHit() {
+  const box = $("#hit-props");
+  if (!bay || selHit < 0 || !bay.spec.sfx[selHit]) { box.innerHTML = `<div class="empty" style="padding:12px">Click a marker on the track, or press <span class="key">B</span> to drop one.</div>`; return; }
+  const m = bay.spec.sfx[selHit];
+  box.innerHTML = `<div class="kv">
+    <div>Sound</div><div><select class="input" id="hp-sound">${lib.map(x => `<option value="${esc(x.id)}" ${x.id === m.sound ? "selected" : ""}>${esc(x.label.toUpperCase())}</option>`).join("")}</select></div>
+    <div>Time</div><div><input class="input mono" id="hp-t" value="${m.t.toFixed(2)}"></div>
+    <div>Volume</div><div style="display:flex;gap:6px;align-items:center"><input type="range" class="range" id="hp-vol" min="0" max="150" value="${Math.round(m.vol * 100)}"><span class="mono data" id="hp-vol-v" style="width:36px;text-align:right">${Math.round(m.vol * 100)}%</span></div>
+    <div>Visual</div><div><select class="input" id="hp-fx">${Object.entries(FX_NAMES).map(([k, v]) => `<option value="${k}" ${k === m.fx ? "selected" : ""}>${v}</option>`).join("")}</select></div>
+  </div><div class="acts"><button class="btn" id="hp-prev">PREVIEW HIT</button><button class="btn minimal" id="hp-del">REMOVE</button></div>`;
+  $("#hp-sound").onchange = e => { m.sound = e.target.value; changed(); playSfx(m.sound, m.vol); };
+  $("#hp-t").onchange = e => { const v = parseFloat(e.target.value); if (!isNaN(v)) { m.t = Math.max(0, Math.min(bay.dur, v)); sortHits(); changed(); renderHit(); } };
+  $("#hp-vol").oninput = e => { m.vol = +e.target.value / 100; $("#hp-vol-v").textContent = `${e.target.value}%`; scheduleSave(); };
+  $("#hp-vol").onchange = () => playSfx(m.sound, m.vol);
+  $("#hp-fx").onchange = e => { m.fx = e.target.value; changed(); };
+  $("#hp-prev").onclick = () => { pv.currentTime = Math.max(bay.spec.trim[0], m.t - 1.2); pv.play(); };
+  $("#hp-del").onclick = () => { bay.spec.sfx.splice(selHit, 1); selHit = -1; changed(); renderHit(); };
+}
+
+/* text, trim, suggestions, saving */
+$("#pk-hook").oninput = e => { bay.spec.hook = e.target.value; changed(); };
+$("#pk-hook-on").onchange = e => { bay.spec.hook_on = e.target.checked; changed(); };
+$("#pk-cap-on").onchange = e => { bay.spec.captions_on = e.target.checked; changed(); };
+$("#pk-color").onchange = e => { bay.spec.color = e.target.value; changed(); };
+["#pk-in", "#pk-out"].forEach(id => $(id).addEventListener("change", () => {
+  const a = parseFtc($("#pk-in").value), b = parseFtc($("#pk-out").value);
+  if (a != null && b != null && b - a >= 1) { bay.spec.trim = [Math.max(0, a), Math.min(bay.dur, b)]; changed(); }
+  syncTextFields();
+}));
+$("#pk-apply-text").onclick = async () => {
+  if (!bay) return;
+  try {
+    bay.spec.words = await api(`/api/units/${bay.jid}/${bay.idx}/retime`, {method: "POST", body: JSON.stringify({text: $("#pk-text").value})});
+    bay.events = buildEvents(bay.spec.words); changed(); toast("TRANSCRIPT APPLIED");
+  } catch (e) { toast(e.message, true); }
+};
+$("#pk-suggest").onclick = async () => {
+  if (!bay) return;
+  const b = $("#pk-suggest"); b.disabled = true; b.textContent = "PLACING…";
+  try {
+    const marks = await api(`/api/units/${bay.jid}/${bay.idx}/suggest-sfx`, {method: "POST", body: JSON.stringify({hook: bay.spec.hook, words: bayWords()})});
+    bay.spec.sfx = marks.map(m => ({t: m.t, sound: m.sound, vol: m.vol, fx: m.fx}));
+    selHit = -1; changed(); renderHit();
+    toast(`${marks.length} SOUNDS PLACED · ${marks.map(m => `${libLabel(m.sound)} @${m.t.toFixed(1)}s`).join(", ")}`);
+  } catch (e) { toast(e.message, true); }
+  finally { b.disabled = false; b.textContent = "AUTO-PLACE SOUNDS"; }
+};
+$("#pk-clear").onclick = () => { if (!bay) return; bay.spec.sfx = []; selHit = -1; changed(); renderHit(); };
+function changed() { renderTrack(); drawOverlay(); scheduleSave(); }
+function scheduleSave() { clearTimeout(saveTimer); $("#pk-saved").textContent = "UNSAVED"; saveTimer = setTimeout(flushSave, 700); }
+async function flushSave() {
+  if (!bay || !saveTimer) return;
+  clearTimeout(saveTimer); saveTimer = null;
+  try { await api(`/api/units/${bay.jid}/${bay.idx}/package`, {method: "PUT", body: JSON.stringify(bay.spec)}); $("#pk-saved").textContent = `SAVED ${new Date().toTimeString().slice(0, 8)}`; }
+  catch (e) { $("#pk-saved").textContent = "SAVE FAILED"; toast(e.message, true); }
+}
+$("#pk-render").onclick = async () => {
+  if (!bay) return;
+  saveTimer = saveTimer || -1; await flushSave();
+  try { await api(`/api/units/${bay.jid}/${bay.idx}/render`, {method: "POST"}); toast(`WO-${bay.order}/${pad(bay.idx + 1)} SENT TO PACKAGING LINE`); poll(); }
+  catch (e) { toast(e.message, true); }
+};
+function refreshBayStatus() {
+  if (!bay) return;
+  const j = jobs.find(x => x.id === bay.jid), c = j && j.clips[bay.idx];
+  if (!c || !bay.ok) return;
+  const p = c.pkg || {}, m = $("#pk-meter");
+  m.className = "meter " + (p.status === "done" ? "green" : "");
+  $("#pk-meter i").style.width = `${((p.status === "done" ? 1 : p.progress || 0) * 100).toFixed(1)}%`;
+  $("#pk-status").textContent = p.status === "done" ? `PACKAGED ${isoTime(p.at)} · ready in F4 SHIPPING` :
+    p.status === "failed" ? p.message : p.status ? p.message : "Not packaged yet";
+  $("#pk-render").textContent = p.status === "done" ? "RE-RENDER PACKAGE ▸" : "RENDER PACKAGE ▸";
+  $("#pk-render").disabled = p.status === "running" || p.status === "queued";
+}
+
+/* ---------------- shipping ---------------- */
+const PLATS = [["tiktok", "TIKTOK"], ["youtube", "YOUTUBE SHORTS"], ["instagram", "INSTAGRAM REELS"], ["x", "X"]];
+let selShip = null, shipKey = "", shipDetailKey = "", shipTimer = null;
+function shipUnits() { return allUnits().filter(u => u.pkg && u.pkg.status === "done").sort((a, b) => (b.pkg.at || 0) - (a.pkg.at || 0)); }
+function platStatus(u, p) { return ((u.ship || {}).platforms || {})[p] || {}; }
+function renderShipping(force) {
+  const units = shipUnits();
+  const pending = units.filter(u => !PLATS.some(([p]) => platStatus(u, p).status === "posted")).length;
+  $("#nav-shipping").textContent = units.length ? (pending || "✓") : "";
+  if (!selShip && units.length) selShip = ukey(units[0].job.id, units[0].idx);
+  const key = JSON.stringify(units.map(u => [ukey(u.job.id, u.idx), u.ship, u.pkg.at])) + selShip;
+  if (key !== shipKey || force) {
+    shipKey = key;
+    $("#sh-list").innerHTML = !units.length ? `<div class="empty"><b>NOTHING TO SHIP</b>Render a package in F3 Packaging and it lands here.</div>` :
+      `<table class="dt"><thead><tr><th style="width:38px"></th><th>Unit</th><th style="width:74px">Order</th><th style="width:60px">Packed</th>
+        ${PLATS.map(([p]) => `<th style="width:76px">${{tiktok: "TT", youtube: "YT", instagram: "IG", x: "X"}[p]}</th>`).join("")}</tr></thead><tbody>
+      ${units.map(u => `<tr class="click tall ${ukey(u.job.id, u.idx) === selShip ? "on" : ""}" data-k="${ukey(u.job.id, u.idx)}"><td>${thumbHtml(u)}</td>
+        <td><div class="hook" style="overflow:hidden;text-overflow:ellipsis">${esc((u.package && u.package.hook) || u.hook)}</div><div class="faint" style="font-size:11px">${esc(u.title)}</div></td>
+        <td class="data">WO-${u.job.order}</td><td class="mono faint">${ago(u.pkg.at || 0)}</td>
+        ${PLATS.map(([p]) => { const st = platStatus(u, p).status;
+          return `<td>${st === "posted" ? `<span class="tag green">POSTED</span>` : st === "skipped" ? `<span class="tag">SKIP</span>` : `<span class="faint mono">—</span>`}</td>`; }).join("")}</tr>`).join("")}
+      </tbody></table>`;
+    $$("#sh-list tr.click").forEach(tr => tr.onclick = () => { selShip = tr.dataset.k; renderShipping(true); renderShipDetail(true); });
+  }
+  renderShipDetail();
+}
+function renderShipDetail(force) {
+  const u = shipUnits().find(x => ukey(x.job.id, x.idx) === selShip), box = $("#sh-detail");
+  if (!u) { if (shipDetailKey) { box.innerHTML = `<div class="empty"><b>NOTHING SELECTED</b>Packaged units appear here, ready to post.</div>`; shipDetailKey = ""; $("#sh-id").textContent = ""; } return; }
+  const key = JSON.stringify([selShip, u.ship, u.pkg.at]);
+  if (!force && (key === shipDetailKey || box.contains(document.activeElement))) return;
+  shipDetailKey = key;
+  const kit = (u.ship || {}).kit || {}, has = Object.values(kit).some(Boolean);
+  const url = `/files/${encodeURIComponent(u.job.id)}/${encodeURIComponent(u.pkg.file)}`;
+  $("#sh-id").textContent = `WO-${u.job.order} / ${pad(u.idx + 1)}`;
+  const field = (name, rows) => rows ? `<textarea class="input" data-kit="${name}" rows="${rows}">${esc(kit[name] || "")}</textarea>` : `<input class="input" data-kit="${name}" value="${esc(kit[name] || "")}">`;
+  box.innerHTML = `<div class="clipview"><video src="${url}" controls playsinline preload="metadata"></video></div>
+    <div class="acts"><button class="btn primary" id="sh-gen">${has ? "REWRITE COPY" : "WRITE POSTING COPY"}</button><button class="btn" id="sh-reveal">REVEAL FILE</button>
+      <span class="mono faint" style="align-self:center;font-size:10.5px">${esc((u.pkg.export || "").split("/").pop())}</span></div>
+    ${PLATS.map(([p, name]) => { const st = platStatus(u, p);
+      return `<div class="plat" data-p="${p}"><div class="plat-h"><b>${name}</b>${st.status === "posted" ? `<span class="tag green">POSTED ${st.at ? isoTime(st.at).slice(5, 16) : ""}</span>` : `<span class="tag">NOT POSTED</span>`}</div>
+        ${p === "youtube" ? field("youtube_title") + `<div style="height:4px"></div>` + field("youtube_description", 3) : field(p, 3)}
+        <div class="row"><button class="btn amber" data-act="prep">PREP UPLOAD</button><button class="btn" data-act="copy">COPY</button><button class="btn minimal" data-act="open">OPEN UPLOADER</button></div>
+        <div class="row"><input class="input" data-url placeholder="Post URL (optional)" value="${esc(st.url || "")}" style="flex:1">
+          ${st.status === "posted" ? `<button class="btn minimal" data-act="unpost">UNDO</button>` : `<button class="btn" data-act="posted">MARK POSTED</button>`}</div></div>`; }).join("")}`;
+  const base = `/api/units/${u.job.id}/${u.idx}`;
+  $("#sh-gen").onclick = async () => { const b = $("#sh-gen"); b.disabled = true; b.textContent = "WRITING…";
+    try { await api(`${base}/kit`, {method: "POST"}); await poll(); renderShipDetail(true); toast("POSTING COPY WRITTEN"); } catch (e) { toast(e.message, true); }
+    finally { b.disabled = false; } };
+  $("#sh-reveal").onclick = () => api(`${base}/reveal`, {method: "POST"});
+  $$("[data-kit]", box).forEach(el => el.oninput = () => { clearTimeout(shipTimer);
+    shipTimer = setTimeout(() => api(`${base}/ship`, {method: "PUT", body: JSON.stringify({kit: {[el.dataset.kit]: el.value}})}), 600); });
+  $$(".plat", box).forEach(pl => {
+    const p = pl.dataset.p;
+    const text = () => p === "youtube" ? `${$("[data-kit=youtube_title]", pl).value}\n\n${$("[data-kit=youtube_description]", pl).value}` : $(`[data-kit=${p}]`, pl).value;
+    $$("[data-act]", pl).forEach(b => b.onclick = async () => {
+      const a = b.dataset.act;
+      try {
+        if (a === "copy") { await copyText(p === "youtube" ? $("[data-kit=youtube_title]", pl).value : text()); toast(p === "youtube" ? "TITLE COPIED · description is below it" : "CAPTION COPIED"); }
+        if (a === "open") await api(`/api/open-upload/${p}`, {method: "POST"});
+        if (a === "prep") {  // everything for one upload in one click: caption on the clipboard, file selected in Finder, uploader open
+          await copyText(p === "youtube" ? $("[data-kit=youtube_title]", pl).value : text());
+          await api(`${base}/reveal`, {method: "POST"});
+          await api(`/api/open-upload/${p}`, {method: "POST"});
+          toast(`${p.toUpperCase()} READY · caption copied, file selected in Finder, uploader opened. Drag the file in and paste.`);
+        }
+        if (a === "posted" || a === "unpost") {
+          await api(`${base}/ship`, {method: "PUT", body: JSON.stringify({platforms: {[p]: {status: a === "posted" ? "posted" : "ready", url: $("[data-url]", pl).value}}})});
+          await poll(); renderShipDetail(true);
+        }
+      } catch (e) { toast(e.message, true); }
+    });
+  });
+}
+async function copyText(text) {
+  try { await api("/api/clipboard", {method: "POST", body: JSON.stringify({text})}); }
+  catch { await navigator.clipboard.writeText(text); }
+}
+(async () => { const s = await api("/api/settings").catch(() => ({})); $("#sh-campaign").value = s.campaign || ""; })();
+$("#sh-campaign-save").onclick = async () => { await api("/api/settings", {method: "PUT", body: JSON.stringify({campaign: $("#sh-campaign").value})}); toast("CAMPAIGN TAGS SAVED · added to every caption"); };
+loadLib();
 
 /* ---------------- system + status bar ---------------- */
 let sysSig = "";
@@ -523,8 +887,7 @@ async function poll() {
     const st = await api("/api/state");
     jobs = st.jobs;
     if (!selOrder && jobs.length) selOrder = (jobs.find(j => j.status === "running") || jobs[0]).id;
-    renderSystem(st); renderOrders(); renderInventory();
-    if (selUnit && !$("#unit video")) renderUnit();
+    renderSystem(st); renderOrders(); renderUnits(); renderShipping(); refreshBayStatus();
   } catch {
     $("#st-led").className = "led bad"; $("#st-engine").textContent = "ENGINE OFFLINE";
   }
