@@ -55,11 +55,31 @@ jobs:
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8765/api/state >/dev/null && break; sleep 1; done
           python packaging/webkit_check.py https://www.twitch.tv/videos/2905281858
 
+      - name: App window launches
+        timeout-minutes: 5
+        env:
+          CLIPWORKS_NO_SETUP: "1"
+        run: |
+          pkill -f "Clipworks --serve" || true
+          for i in $(seq 1 20); do curl -sf http://127.0.0.1:8765/api/state >/dev/null || break; sleep 1; done
+          dist/Clipworks.app/Contents/MacOS/Clipworks > app_window.log 2>&1 &
+          APP=$!
+          ok=""
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8765/api/state >/dev/null && ok=1 && break; sleep 1; done
+          sleep 8
+          screencapture -x app_window.png || true
+          if [ -z "$ok" ] || ! kill -0 $APP 2>/dev/null; then echo "app did not stay up"; cat app_window.log; exit 1; fi
+          echo "window process alive, engine responding"
+          osascript -e 'tell application "System Events" to get name of every window of (every process whose name is "Clipworks")' || true
+          kill $APP
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: webkit-screenshot
-          path: webkit_workbench.png
+          name: screenshots
+          path: |
+            webkit_workbench.png
+            app_window.png
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v4

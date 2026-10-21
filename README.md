@@ -4,6 +4,9 @@ Local clip factory for streams and long videos. Load a stream, find the good par
 send it to the factory, get finished 9:16 clips with captions and a hook. Everything
 runs on your Mac. No accounts, no uploads, no subscription.
 
+![Factory](docs/factory.png)
+![Inventory](docs/inventory.png)
+
 ## Install (Mac, Apple Silicon)
 
 1. Download **[Clipworks.dmg](https://github.com/cooldude292/testest/releases/download/clipworks-latest/Clipworks.dmg)**.
