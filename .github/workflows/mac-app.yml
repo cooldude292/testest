@@ -35,13 +35,16 @@ jobs:
         run: bash packaging/build_mac.sh
 
       - name: Selftest the packaged app
+        timeout-minutes: 40
         env:
           CLIPPER_DATA: ${{ runner.temp }}/clipworks-data
+          PYTHONUNBUFFERED: "1"
         run: |
           dist/Clipworks.app/Contents/MacOS/Clipworks --selftest \
             --twitch https://www.twitch.tv/videos/2905281858 --llm
 
       - name: Preview plays in WebKit (Safari)
+        timeout-minutes: 10
         env:
           CLIPPER_DATA: ${{ runner.temp }}/clipworks-web
           CLIPWORKS_NO_SETUP: "1"

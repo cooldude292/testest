@@ -15,25 +15,44 @@ from pathlib import Path
 results = []
 
 
-def check(name):
+def check(name, timeout=600):
+    """Run one check in a thread with a deadline, so a hang names itself instead of stalling CI."""
     def wrap(fn):
         def run(*a):
             t = time.time()
-            try:
-                detail = fn(*a) or ""
-                results.append((name, True, f"{detail} ({time.time() - t:.1f}s)"))
-            except Exception:
-                results.append((name, False, traceback.format_exc()[-1500:]))
+            print(f"--> {name}", flush=True)
+            box = {}
+
+            def target():
+                try:
+                    box["detail"] = fn(*a) or ""
+                except Exception:
+                    box["error"] = traceback.format_exc()[-1500:]
+
+            th = threading.Thread(target=target, daemon=True)
+            th.start()
+            th.join(timeout)
+            if th.is_alive():
+                results.append((name, False, f"TIMED OUT after {timeout}s"))
+            elif "error" in box:
+                results.append((name, False, box["error"]))
+            else:
+                results.append((name, True, f"{box['detail']} ({time.time() - t:.1f}s)"))
+            print(f"    {'ok' if results[-1][1] else 'FAILED'}: {results[-1][2][:300]}", flush=True)
         return run
     return wrap
 
 
 class Ctx:
-    def stage(self, *a):
-        pass
+    last = 0.0
+
+    def stage(self, stage, progress, message):
+        if time.time() - Ctx.last > 10:
+            Ctx.last = time.time()
+            print(f"   [{stage}] {message}", flush=True)
 
     def log(self, m):
-        print("   log:", m)
+        print("   log:", m, flush=True)
 
     def check(self):
         pass
@@ -68,7 +87,7 @@ def run(args):
 
     speech = tmp / "speech.aiff"
 
-    @check("transcribe (MLX Whisper tiny)")
+    @check("transcribe (MLX Whisper tiny)", 900)
     def stt():
         subprocess.run(["say", "-o", str(speech), "This is a test of the clip factory. "
                         "Chat is going crazy right now. Nobody expected that."], check=True)
@@ -118,7 +137,7 @@ def run(args):
         msgs = chat.fetch(info["twitch_id"], 600, 660, Ctx())
         return f"{info['title'][:40]} preview={info['preview_type']} chat_msgs_1min={len(msgs)}"
 
-    @check("Ollama download + real LLM call")
+    @check("Ollama download + real LLM call", 1200)
     def llm():
         if "--llm" not in args:
             return "skipped (pass --llm)"
@@ -136,6 +155,7 @@ def run(args):
 
     for fn in (tools, web, stt, rend, twitch, llm):
         fn()
+    sys.stdout.flush()
 
     print("\n=== SELFTEST RESULTS ===")
     ok = True
