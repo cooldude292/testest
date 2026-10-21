@@ -3,215 +3,170 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Clipper</title>
-<style>
-  :root { --bg:#111; --panel:#1b1b1b; --line:#2c2c2c; --text:#eee; --dim:#999; --accent:#ffd700; --ok:#3ecf6e; --bad:#ff5c5c; }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 -apple-system, system-ui, sans-serif; }
-  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; }
-  h1 { margin: 0 0 16px; font-size: 22px; } h1 span { color: var(--accent); }
-  h2 { font-size: 15px; margin: 0 0 10px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; }
-  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 16px; }
-  .row { display: grid; grid-template-columns: 22px 220px 1fr; gap: 10px; align-items: center; padding: 4px 0; }
-  .bar { height: 6px; background: #333; border-radius: 3px; overflow: hidden; }
-  .bar > i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
-  .bar.indet > i { width: 30% !important; animation: slide 1.2s infinite ease-in-out; }
-  @keyframes slide { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
-  .msg { color: var(--dim); font-size: 12px; }
-  .ok { color: var(--ok); } .error, .failed { color: var(--bad); } .running { color: var(--accent); }
-  form { display: grid; gap: 10px; }
-  input, select, button { font: inherit; color: var(--text); background: #0d0d0d; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
-  input[type=text] { width: 100%; }
-  .opts { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
-  .opts label { display: grid; gap: 3px; font-size: 12px; color: var(--dim); }
-  .opts input { width: 90px; }
-  button { background: var(--accent); color: #000; font-weight: 600; cursor: pointer; border: 0; }
-  button.ghost { background: transparent; color: var(--dim); border: 1px solid var(--line); font-weight: 400; padding: 4px 10px; }
-  .job { border-top: 1px solid var(--line); padding: 14px 0; }
-  .job:first-of-type { border-top: 0; padding-top: 0; }
-  .job-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
-  .job-title { font-weight: 600; word-break: break-all; }
-  .badge { font-size: 11px; padding: 1px 7px; border-radius: 10px; border: 1px solid currentColor; }
-  .steps { display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap; font-size: 12px; color: #555; }
-  .steps b { font-weight: 400; } .steps b.cur { color: var(--accent); } .steps b.past { color: var(--ok); }
-  details { margin-top: 6px; } summary { cursor: pointer; color: var(--dim); font-size: 12px; }
-  pre { background: #0b0b0b; padding: 8px; border-radius: 6px; font-size: 11px; white-space: pre-wrap; max-height: 220px; overflow: auto; }
-  .clips { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; margin-top: 12px; }
-  .clip { background: #0d0d0d; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-  .clip video { width: 100%; aspect-ratio: 9/16; background: #000; display: block; }
-  .clip div { padding: 8px 10px; }
-  .score { float: right; font-weight: 700; color: var(--accent); }
-  .clip a { color: var(--accent); font-size: 12px; }
-  .row-err { color: var(--bad); font-size: 12px; margin-top: 4px; }
-  @media (max-width: 600px) { .row { grid-template-columns: 22px 1fr; } .row .bar { grid-column: 2; } }
-</style>
+<title>Clipworks</title>
+<link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-<main>
-  <h1>Clip<span>per</span> <small class="msg" id="models"></small></h1>
+<div class="shell">
+  <aside class="side">
+    <div class="brand">
+      <div class="mark"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><path d="M4 7h16M4 12h10M4 17h13"/></svg></div>
+      <div><b>Clipworks</b><small>Enterprise</small></div>
+    </div>
+    <nav class="nav">
+      <a href="#workbench" data-page="workbench"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M7 20h10M12 16v4"/></svg>Workbench</a>
+      <a href="#factory" data-page="factory"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V10l6 4V10l6 4V5h6v16z"/><path d="M7 17h2M12 17h2M17 17h2"/></svg>Factory<span class="count" id="nav-factory">0</span></a>
+      <a href="#inventory" data-page="inventory"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8M12 13v8"/></svg>Inventory<span class="count" id="nav-inventory">0</span></a>
+      <a href="#system" data-page="system"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>System</a>
+    </nav>
+    <div class="side-foot">
+      <div class="sysline"><span class="dot" id="sys-dot"></span><span id="sys-text">Connecting…</span></div>
+      <div id="sys-ver">Local deployment</div>
+    </div>
+  </aside>
 
-  <section id="setup">
-    <h2>Setup</h2>
-    <div id="setup-rows"></div>
-    <button class="ghost" id="retry" style="display:none;margin-top:8px">Retry setup</button>
-  </section>
-
-  <section>
-    <h2>New job</h2>
-    <form id="form">
-      <input type="text" id="source" placeholder="YouTube / Twitch VOD / Kick / any yt-dlp link, or a file path like ~/Movies/pod.mp4">
-      <div class="opts">
-        <label>or upload a file <input type="file" id="file" accept="video/*" style="width:240px"></label>
-        <label>Only this part (optional) <input type="text" id="section" placeholder="10:00-1:05:00" style="width:150px"></label>
-        <label>Max clips <input type="number" id="max_clips" value="5" min="1" max="30"></label>
-        <label>Min sec <input type="number" id="min_len" value="20" min="5"></label>
-        <label>Max sec <input type="number" id="max_len" value="60" min="10"></label>
-        <label>Layout
-          <select id="layout">
-            <option value="auto">auto</option>
-            <option value="track">follow faces</option>
-            <option value="split">facecam top, game bottom</option>
-            <option value="zoom">zoom into gameplay</option>
-            <option value="fit">fit + blur</option>
-            <option value="center">center crop</option>
-          </select>
-        </label>
-        <button type="submit" id="go">Make clips</button>
+  <main class="main">
+    <header class="top">
+      <h1 id="page-title">Workbench</h1><span class="crumb" id="page-crumb"></span>
+      <div class="right">
+        <span class="chip" id="chip-llm">LLM</span>
+        <button class="btn sm" id="btn-exports">Exports folder</button>
       </div>
-      <div class="row-err" id="form-err"></div>
-    </form>
-  </section>
+    </header>
 
-  <section>
-    <h2>Jobs</h2>
-    <div id="jobs"><div class="msg">Nothing yet.</div></div>
-  </section>
-</main>
-<script>
-const STAGES = ["download", "audio", "chat", "transcribe", "moments", "render"];
-const STAGE_NAMES = {download: "Download", audio: "Audio", chat: "Chat", transcribe: "Transcribe", moments: "Find moments", render: "Render"};
-const ICON = {pending: "·", running: "◐", ok: "✓", error: "✗"};
-const $ = (s, el = document) => el.querySelector(s);
-const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const fmt = t => { t = Math.floor(t); const h = Math.floor(t/3600), m = Math.floor(t%3600/60), s = t%60;
-  return (h ? h + ":" + String(m).padStart(2,"0") : m) + ":" + String(s).padStart(2,"0"); };
+    <div class="content">
+      <div class="banner" id="provision" style="display:none">
+        <span class="spin" style="color:var(--warn)"></span>
+        <div><b>Provisioning production models.</b> <span class="muted" id="provision-msg">You can load and select footage now. The factory starts once models are ready.</span></div>
+        <div class="bar" id="provision-bar"><i></i></div>
+        <a class="btn sm" href="#system">Details</a>
+      </div>
 
-function setBar(bar, p, active) {
-  bar.classList.toggle("indet", active && (p === null || p === undefined));
-  bar.firstElementChild.style.width = ((p ?? 0) * 100).toFixed(1) + "%";
-}
+      <!-- WORKBENCH -->
+      <section class="page" id="page-workbench">
+        <div class="loadbar">
+          <input class="input" id="src-input" placeholder="Paste a YouTube, Twitch or Kick link" autocomplete="off" spellcheck="false">
+          <button class="btn primary" id="src-load">Load source</button>
+          <button class="btn" id="src-file">Open file…</button>
+          <input type="file" id="src-file-input" accept="video/*" hidden>
+        </div>
 
-function renderSetup(setup, ready) {
-  const rows = $("#setup-rows");
-  for (const [key, s] of Object.entries(setup)) {
-    let row = rows.querySelector(`[data-k="${key}"]`);
-    if (!row) {
-      row = document.createElement("div");
-      row.dataset.k = key;
-      row.innerHTML = `<div class="row"><span class="ic"></span><span class="lb"></span><div class="bar"><i></i></div></div><div class="msg" style="margin-left:32px"></div>`;
-      rows.appendChild(row);
-    }
-    const ic = $(".ic", row); ic.textContent = ICON[s.status] || "·"; ic.className = "ic " + s.status;
-    $(".lb", row).textContent = s.label;
-    setBar($(".bar", row), s.status === "ok" ? 1 : s.progress, s.status === "running");
-    $(".msg", row).textContent = s.message;
-  }
-  $("#retry").style.display = Object.values(setup).some(s => s.status === "error") ? "" : "none";
-  $("#setup h2").textContent = ready ? "Setup ✓ ready" : "Setup (first run downloads a few GB)";
-}
+        <div id="wb-empty">
+          <div class="card">
+            <div class="card-h"><h3>Recent sources</h3></div>
+            <div id="recent"></div>
+          </div>
+        </div>
 
-function clipCard(job, c) {
-  const url = `/files/${encodeURIComponent(job.id)}/${encodeURIComponent(c.file)}`;
-  return `<div class="clip"><video src="${url}" controls preload="metadata" playsinline></video>
-    <div><span class="score">${c.score}</span><b>${esc(c.title)}</b>
-    <div class="msg">${fmt(c.start)} – ${fmt(c.end)} · ${Math.round(c.end - c.start)}s · ${esc(c.layout || "")}</div>
-    <div class="msg">Hook: ${esc(c.hook)}</div>
-    <div class="msg">${esc(c.reason)}</div>
-    <div class="msg">LLM ${c.llm_score ?? "-"}${c.rerank_score != null ? " / rerank " + c.rerank_score : ""} · signals ${c.signal_score ?? "-"}${c.peak_chat >= 1.8 ? " · chat x" + c.peak_chat : ""}</div>
-    <a href="${url}" download>Download</a></div></div>`;
-}
+        <div id="wb-loaded" style="display:none">
+          <div class="srchead">
+            <span class="badge" id="src-kind">SRC</span>
+            <h2 id="src-title"></h2>
+            <span class="muted" id="src-meta"></span>
+          </div>
+          <div class="wb">
+            <div class="card">
+              <div class="player"><video id="video" playsinline preload="metadata"></video><div class="player-msg" id="player-msg" style="display:none"></div></div>
+              <div class="transport">
+                <button class="btn sm" id="tp-play" title="Play/Pause (Space)">Play</button>
+                <button class="btn sm ghost" id="tp-back" title="Back 10s (J)">−10s</button>
+                <button class="btn sm ghost" id="tp-fwd" title="Forward 10s (L)">+10s</button>
+                <span class="tc" id="tp-tc">00:00:00 / 00:00:00</span>
+                <span style="flex:1"></span>
+                <button class="btn sm" id="tp-in">Mark In <span class="kbd">I</span></button>
+                <button class="btn sm" id="tp-out">Mark Out <span class="kbd">O</span></button>
+                <button class="btn sm ghost" id="tp-loop" title="Play the selection">Play selection</button>
+                <button class="btn sm ghost" id="tp-clear">Clear</button>
+              </div>
+              <div class="timeline">
+                <div class="tl-meta"><b id="tl-signal">Signal</b><span id="tl-status"></span><span class="right">Drag to select a range · drag the edges to trim</span></div>
+                <canvas class="tl" id="tl"></canvas>
+              </div>
+            </div>
 
-function renderJobs(jobs) {
-  const box = $("#jobs");
-  if (!jobs.length) return;
-  $(".msg", box)?.remove();
-  const seen = new Set();
-  jobs.forEach((j, idx) => {
-    seen.add(j.id);
-    let el = box.querySelector(`[data-id="${j.id}"]`);
-    if (!el) {
-      el = document.createElement("div");
-      el.className = "job"; el.dataset.id = j.id; el.dataset.nclips = "-1";
-      el.innerHTML = `<div class="job-head"><span class="job-title"></span><span class="badge"></span>
-        <button class="ghost cancel">Cancel</button><button class="ghost retry">Retry</button><button class="ghost reveal">Open folder</button></div>
-        <div class="steps"></div><div class="bar"><i></i></div><div class="msg status-msg"></div>
-        <details><summary>Log</summary><pre></pre></details><div class="clips"></div>`;
-      $(".cancel", el).onclick = () => fetch(`/api/jobs/${j.id}/cancel`, {method: "POST"});
-      $(".retry", el).onclick = () => fetch(`/api/jobs/${j.id}/retry`, {method: "POST"});
-      $(".reveal", el).onclick = async () => { const r = await (await fetch(`/api/jobs/${j.id}/reveal`, {method: "POST"})).json(); if (!navigator.platform.startsWith("Mac")) alert(r.path); };
-      box.appendChild(el);
-    }
-    if (box.children[idx] !== el) box.insertBefore(el, box.children[idx]);
-    $(".job-title", el).textContent = j.title || j.source;
-    const b = $(".badge", el); b.textContent = j.status; b.className = "badge " + (j.status === "done" ? "ok" : j.status);
-    $(".cancel", el).style.display = (j.status === "running" || j.status === "queued") ? "" : "none";
-    $(".retry", el).style.display = (j.status === "failed" || j.status === "cancelled") ? "" : "none";
-    const cur = STAGES.indexOf(j.stage);
-    $(".steps", el).innerHTML = STAGES.map((s, i) => {
-      const cls = j.status === "done" || i < cur ? "past" : (i === cur && j.status === "running" ? "cur" : "");
-      return `<b class="${cls}">${STAGE_NAMES[s]}</b>`; }).join(" → ");
-    const active = j.status === "running";
-    setBar($(".bar", el), j.status === "done" ? 1 : j.progress, active);
-    $(".bar", el).style.display = (active || j.status === "done") ? "" : "none";
-    $(".status-msg", el).textContent = j.message;
-    const pre = $("pre", el), atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
-    pre.textContent = j.log.join("\n");
-    if (atBottom) pre.scrollTop = pre.scrollHeight;
-    // Only rebuild clip players when the list changes, so playback isn't interrupted.
-    if (String(j.clips.length) !== el.dataset.nclips) {
-      el.dataset.nclips = String(j.clips.length);
-      $(".clips", el).innerHTML = j.clips.map(c => clipCard(j, c)).join("");
-    }
-  });
-  [...box.children].forEach(el => { if (!seen.has(el.dataset.id)) el.remove(); });
-}
+            <div style="display:grid; gap:16px">
+              <div class="card">
+                <div class="card-h"><h3>Work order</h3><span class="right badge" id="wo-state">No selection</span></div>
+                <div class="card-b">
+                  <div class="grid2">
+                    <div class="field"><label>In</label><input class="input mono" id="sel-in" placeholder="00:00:00"></div>
+                    <div class="field"><label>Out</label><input class="input mono" id="sel-out" placeholder="00:00:00"></div>
+                  </div>
+                  <div class="sum" style="margin-top:10px"><span class="muted">Selection length</span><span class="mono" id="sel-len">—</span></div>
+                  <div class="grid2" style="margin-top:10px">
+                    <div class="field"><label>Clips to produce</label>
+                      <select class="input" id="opt-clips"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option><option>8</option><option>10</option></select></div>
+                    <div class="field"><label>Clip length</label>
+                      <select class="input" id="opt-len"><option value="15-30">15–30s</option><option value="20-45" selected>20–45s</option><option value="30-60">30–60s</option><option value="45-90">45–90s</option></select></div>
+                  </div>
+                  <div class="field" style="margin-top:10px"><label>Layout</label>
+                    <select class="input" id="opt-layout">
+                      <option value="auto">Automatic</option>
+                      <option value="split">Facecam over gameplay</option>
+                      <option value="track">Follow speaker</option>
+                      <option value="zoom">Gameplay zoom</option>
+                      <option value="fit">Full frame, blurred fill</option>
+                      <option value="center">Center crop</option>
+                    </select></div>
+                  <button class="btn primary big" id="send" style="margin-top:14px" disabled>Send to Factory</button>
+                  <div class="note">Only the selected range is downloaded, transcribed and analyzed.</div>
+                </div>
+              </div>
 
-async function poll() {
-  try {
-    const st = await (await fetch("/api/state")).json();
-    $("#models").textContent = `LLM: ${st.llm} · Whisper: ${st.whisper}`;
-    renderSetup(st.setup, st.ready);
-    renderJobs(st.jobs);
-  } catch (e) { $("#models").textContent = "Lost connection to the app. Is start.sh still running?"; }
-  setTimeout(poll, 1000);
-}
+              <div class="card">
+                <div class="card-h"><h3>Hot spots</h3><span class="right faint" id="hot-src"></span></div>
+                <div id="hot"><div class="empty">No signal yet.</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
 
-$("#retry").onclick = () => fetch("/api/setup/retry", {method: "POST"});
+      <!-- FACTORY -->
+      <section class="page" id="page-factory">
+        <div class="kpis">
+          <div class="card kpi"><div class="l">In production</div><div class="v" id="k-run">0</div></div>
+          <div class="card kpi"><div class="l">Queued</div><div class="v" id="k-queue">0</div></div>
+          <div class="card kpi"><div class="l">Orders shipped</div><div class="v" id="k-done">0</div></div>
+          <div class="card kpi"><div class="l">Clips produced</div><div class="v" id="k-clips">0</div></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><h3>Production line</h3></div>
+          <div id="orders"><div class="empty"><b>No work orders</b>Select a range in the Workbench and send it to the factory.</div></div>
+        </div>
+      </section>
 
-$("#form").onsubmit = async e => {
-  e.preventDefault();
-  const err = $("#form-err"); err.textContent = "";
-  const opts = {section: $("#section").value, max_clips: +$("#max_clips").value, min_len: +$("#min_len").value,
-                max_len: +$("#max_len").value, layout: $("#layout").value};
-  const file = $("#file").files[0];
-  $("#go").disabled = true;
-  try {
-    let r;
-    if (file) {
-      const fd = new FormData(); fd.append("file", file);
-      for (const [k, v] of Object.entries(opts)) fd.append(k, v);
-      $("#go").textContent = "Uploading…";
-      r = await fetch("/api/upload", {method: "POST", body: fd});
-    } else {
-      r = await fetch("/api/jobs", {method: "POST", headers: {"Content-Type": "application/json"},
-                                     body: JSON.stringify({source: $("#source").value, ...opts})});
-    }
-    if (!r.ok) { const d = await r.json().catch(() => ({})); err.textContent = d.detail || ("Error " + r.status); }
-    else { $("#source").value = ""; $("#file").value = ""; }
-  } finally { $("#go").disabled = false; $("#go").textContent = "Make clips"; }
-};
+      <!-- INVENTORY -->
+      <section class="page" id="page-inventory">
+        <div class="filters">
+          <input class="input" id="inv-q" placeholder="Search hooks, titles, sources">
+          <select class="input" id="inv-sort"><option value="new">Newest first</option><option value="score">Highest score</option></select>
+          <select class="input" id="inv-order"><option value="">All orders</option></select>
+          <span style="flex:1"></span>
+          <span class="muted" id="inv-count"></span>
+        </div>
+        <div class="clips" id="clips"></div>
+        <div class="card" id="inv-empty"><div class="empty"><b>Inventory is empty</b>Finished clips from the factory land here.</div></div>
+      </section>
 
-poll();
-</script>
+      <!-- SYSTEM -->
+      <section class="page" id="page-system">
+        <div class="sys">
+          <div class="card">
+            <div class="card-h"><h3>Provisioning</h3><span class="right"><button class="btn sm" id="retry-setup">Retry</button></span></div>
+            <div id="steps"></div>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>Configuration</h3></div>
+            <div class="card-b kv" id="config"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast"></div>
+<script src="/static/vendor/hls.min.js"></script>
+<script src="/static/app.js"></script>
 </body>
 </html>

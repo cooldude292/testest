@@ -1,11 +1,30 @@
 import os
 import platform
+import sys
 from pathlib import Path
 
+APP_NAME = "Clipworks"
+VERSION = "2026.10"
+
 ROOT = Path(__file__).resolve().parent.parent
-DATA = Path(os.environ.get("CLIPPER_DATA", ROOT / "workspace")).expanduser()
+FROZEN = getattr(sys, "frozen", False)          # running inside the packaged .app
+APP_MODE = FROZEN or os.environ.get("CLIPWORKS_APP") == "1"
+
+if APP_MODE and platform.system() == "Darwin":
+    DATA = Path.home() / "Library" / "Application Support" / APP_NAME
+    EXPORT_DIR = Path.home() / "Movies" / APP_NAME      # finished clips, where people expect them
+else:
+    DATA = ROOT / "workspace"
+    EXPORT_DIR = DATA / "exports"
+if os.environ.get("CLIPPER_DATA"):
+    DATA = Path(os.environ["CLIPPER_DATA"]).expanduser()
+    EXPORT_DIR = DATA / "exports"
+if os.environ.get("CLIPPER_EXPORT"):
+    EXPORT_DIR = Path(os.environ["CLIPPER_EXPORT"]).expanduser()
 JOBS_DIR = DATA / "jobs"
 UPLOADS_DIR = DATA / "uploads"
+CACHE_DIR = DATA / "cache"
+BIN_DIR = DATA / "bin"                         # tools downloaded at runtime (Ollama)
 
 PORT = int(os.environ.get("CLIPPER_PORT", "8765"))
 
@@ -30,5 +49,13 @@ FACE_MODEL_URL = (
 
 OUT_W, OUT_H = 1080, 1920
 
-for d in (JOBS_DIR, UPLOADS_DIR):
+for d in (JOBS_DIR, UPLOADS_DIR, CACHE_DIR, BIN_DIR, EXPORT_DIR):
     d.mkdir(parents=True, exist_ok=True)
+
+# Tools shipped inside the .app (ffmpeg, ffprobe, deno) and ones fetched later (ollama)
+# are found through PATH, which is also how yt-dlp looks for ffmpeg and deno.
+_extra = [str(BIN_DIR)]
+if FROZEN:
+    _extra.insert(0, str(Path(sys._MEIPASS) / "bin"))
+os.environ["PATH"] = os.pathsep.join(_extra + [os.environ.get("PATH", ""),
+                                               "/opt/homebrew/bin", "/usr/local/bin"])

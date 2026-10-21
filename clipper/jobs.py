@@ -1,6 +1,8 @@
 """Job state, persistence, and the single worker thread that runs the pipeline."""
 import json
 import queue
+import re
+import shutil
 import subprocess
 import threading
 import time
@@ -8,7 +10,7 @@ import traceback
 import uuid
 from pathlib import Path
 
-from . import chat, config, download, moments, render, setup_tasks, transcribe
+from . import chat, config, download, moments, render, setup_tasks, sources, transcribe
 from .util import ffmpeg
 
 STAGES = ["download", "audio", "chat", "transcribe", "moments", "render"]
@@ -19,8 +21,10 @@ class Cancelled(Exception):
 
 
 class Job:
-    def __init__(self, source, options, jid=None):
+    def __init__(self, source, options, jid=None, order=0):
         self.id = jid or time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
+        self.order = order
+        self.export_dir = ""
         self.source = source
         self.options = options
         self.title = ""
@@ -41,7 +45,8 @@ class Job:
 
     def to_dict(self, log_tail=12):
         return {
-            "id": self.id, "source": self.source, "options": self.options, "title": self.title,
+            "id": self.id, "order": self.order, "export_dir": self.export_dir,
+            "source": self.source, "options": self.options, "title": self.title,
             "status": self.status, "stage": self.stage, "progress": self.progress,
             "message": self.message, "log": self.log_lines[-log_tail:] if log_tail else self.log_lines,
             "clips": self.clips, "error": self.error, "created": self.created,
@@ -98,7 +103,8 @@ class Manager:
                 d = json.loads(f.read_text())
             except Exception:
                 continue
-            j = Job(d["source"], d.get("options", {}), d["id"])
+            j = Job(d["source"], d.get("options", {}), d["id"], d.get("order", 0))
+            j.export_dir = d.get("export_dir", "")
             j.title, j.status, j.stage = d.get("title", ""), d.get("status"), d.get("stage", "")
             j.progress, j.message = d.get("progress"), d.get("message", "")
             j.log_lines, j.clips, j.error = d.get("log", []), d.get("clips", []), d.get("error", "")
@@ -109,8 +115,11 @@ class Manager:
             self.jobs[j.id] = j
 
     def submit(self, source, options):
-        j = Job(source, options)
-        j.log(f"Queued: {source}")
+        with self.lock:
+            order = max([1000] + [x.order for x in self.jobs.values()]) + 1
+        j = Job(source, options, order=order)
+        j.title = options.get("source_title", "")
+        j.log(f"Work order WO-{order} received: {source} [{options.get('section') or 'full'}]")
         j.save(force=True)
         with self.lock:
             self.jobs[j.id] = j
@@ -135,6 +144,15 @@ class Manager:
         j.log("Retrying (reusing anything already downloaded)")
         j.save(force=True)
         self.q.put(j.id)
+        return True
+
+    def delete(self, jid):
+        j = self.jobs.get(jid)
+        if not j or j.status in ("queued", "running"):
+            return False
+        with self.lock:
+            self.jobs.pop(jid, None)
+        shutil.rmtree(j.dir, ignore_errors=True)
         return True
 
     def list(self):
@@ -204,10 +222,18 @@ def run_pipeline(job, ctx):
     if meta.get("twitch_id"):
         ctx.stage("chat", 0.0, "Reading Twitch chat")
         try:
-            raw = chat.fetch(meta["twitch_id"], meta["offset"], meta["offset"] + duration, ctx)
+            full = sources.cached_chat(meta["twitch_id"])
+            if full:
+                all_msgs, vod_dur = full
+                lo, hi = meta["offset"], meta["offset"] + duration
+                raw = [(t, x) for t, x in all_msgs if lo <= t < hi]
+                chat_base = len(all_msgs) / max(vod_dur, 1)
+                ctx.log(f"Using cached chat for the whole stream ({len(all_msgs)} messages)")
+            else:
+                raw = chat.fetch(meta["twitch_id"], meta["offset"], meta["offset"] + duration, ctx)
             messages = [(t - meta["offset"], text) for t, text in raw]
             ctx.log(f"Read {len(messages)} chat messages")
-            if meta.get("vod_duration") and meta["vod_duration"] > duration * 1.5:
+            if chat_base is None and meta.get("vod_duration") and meta["vod_duration"] > duration * 1.5:
                 ctx.stage("chat", None, "Sampling chat across the whole stream for a baseline")
                 chat_base = chat.baseline_rate(meta["twitch_id"], meta["vod_duration"])
                 if chat_base:
@@ -234,6 +260,8 @@ def run_pipeline(job, ctx):
     if not picks:
         raise RuntimeError("The LLM didn't find any clip-worthy moments")
     ctx.log(f"Picked {len(picks)} moment(s)")
+    for c in picks:  # where each clip sits in the original video, for the UI
+        c["abs_start"], c["abs_end"] = meta["offset"] + c["start"], meta["offset"] + c["end"]
     (job.dir / "moments.json").write_text(json.dumps(picks, indent=2))
 
     for n, clip in enumerate(picks, 1):
@@ -245,3 +273,18 @@ def run_pipeline(job, ctx):
         ctx.log(f"Rendered {name} ({clip['end']-clip['start']:.0f}s, score {clip['score']}, {clip['layout']})")
         job.save(force=True)
     audio.unlink(missing_ok=True)
+    export(job)
+
+
+def _safe(name, n=60):
+    name = re.sub(r'[\\/:*?"<>|\n\r]+', " ", name).strip()
+    return re.sub(r"\s+", " ", name)[:n].strip() or "clip"
+
+
+def export(job):
+    """Copy finished clips somewhere people actually look (~/Movies/Clipworks in the app)."""
+    dest = config.EXPORT_DIR / _safe(f"WO-{job.order} {job.title}", 80)
+    dest.mkdir(parents=True, exist_ok=True)
+    for n, c in enumerate(job.clips, 1):
+        shutil.copy2(job.dir / c["file"], dest / f"{n:02d} {_safe(c.get('hook') or c.get('title') or 'clip')}.mp4")
+    job.export_dir = str(dest)

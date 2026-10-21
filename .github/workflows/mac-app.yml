@@ -1,0 +1,58 @@
+name: Build Clipworks for macOS
+
+on:
+  push:
+    branches: ["claude/busy-mccarthy-3t772e"]
+    paths: ["clipper/**", "app_main.py", "packaging/**", "requirements*.txt", ".github/workflows/mac-app.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mac-app
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-app.txt
+
+      - name: Build app and DMG
+        run: bash packaging/build_mac.sh
+
+      - name: Selftest the packaged app
+        env:
+          CLIPPER_DATA: ${{ runner.temp }}/clipworks-data
+        run: |
+          dist/Clipworks.app/Contents/MacOS/Clipworks --selftest \
+            --twitch https://www.twitch.tv/videos/2905281858 --llm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Clipworks-dmg
+          path: dist/Clipworks.dmg
+          retention-days: 14
+
+      - name: Publish download (latest build)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete clipworks-latest --yes --cleanup-tag || true
+          gh release create clipworks-latest dist/Clipworks.dmg \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "Clipworks (latest build)" \
+            --notes "Built from ${GITHUB_SHA::7}. Unsigned: first launch needs System Settings → Privacy & Security → Open Anyway."

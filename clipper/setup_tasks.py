@@ -1,9 +1,11 @@
 """First-run setup that shows up on the status page: Ollama, the LLM, Whisper, face model."""
 import json
+import platform
 import shutil
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import requests
 
@@ -86,22 +88,70 @@ def _ollama_up():
         return False
 
 
+OLLAMA_DOWNLOAD = "https://github.com/ollama/ollama/releases/latest/download/ollama-darwin.tgz"
+_ollama_proc = None
+
+
+def _find_ollama():
+    for p in (shutil.which("ollama"), "/Applications/Ollama.app/Contents/Resources/ollama",
+              str(config.BIN_DIR / "ollama" / "ollama")):
+        if p and Path(p).is_file():
+            return p
+    return None
+
+
+def _download_ollama(key):
+    """No Ollama on this Mac: fetch the official CLI build into our own folder."""
+    import tarfile
+    dest = config.BIN_DIR / "ollama"
+    dest.mkdir(parents=True, exist_ok=True)
+    tgz = config.BIN_DIR / "ollama-darwin.tgz"
+    with requests.get(OLLAMA_DOWNLOAD, stream=True, timeout=(15, 120)) as r:
+        r.raise_for_status()
+        total = int(r.headers.get("content-length") or 0)
+        done = 0
+        with tgz.open("wb") as f:
+            for chunk in r.iter_content(1 << 20):
+                f.write(chunk)
+                done += len(chunk)
+                _set(key, progress=(done / total) if total else None,
+                     message=f"Downloading Ollama {done/1e6:.0f}" + (f" / {total/1e6:.0f} MB" if total else " MB"))
+    _set(key, progress=None, message="Unpacking Ollama")
+    with tarfile.open(tgz) as t:
+        t.extractall(dest)
+    tgz.unlink()
+    exe = next((p for p in dest.rglob("ollama") if p.is_file()), None)
+    if not exe:
+        raise RuntimeError("Ollama download didn't contain the ollama binary")
+    exe.chmod(0o755)
+    return str(exe)
+
+
 def _ollama(key):
+    global _ollama_proc
     if _ollama_up():
         _set(key, message="Running")
         return
-    exe = shutil.which("ollama")
+    exe = _find_ollama()
     if not exe:
-        raise RuntimeError("Ollama isn't installed. On a Mac: brew install ollama")
-    _set(key, message="Starting ollama serve")
+        if platform.system() != "Darwin":
+            raise RuntimeError("Ollama isn't installed. Get it from https://ollama.com")
+        exe = _download_ollama(key)
+    _set(key, progress=None, message="Starting the model server")
     log = open(config.DATA / "ollama.log", "ab")
-    subprocess.Popen([exe, "serve"], stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    _ollama_proc = subprocess.Popen([exe, "serve"], stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     for _ in range(60):
         if _ollama_up():
             _set(key, message="Running")
             return
         time.sleep(0.5)
     raise RuntimeError(f"Ollama didn't start. Check {config.DATA / 'ollama.log'}")
+
+
+def stop_ollama():
+    """Only stops a server we started ourselves; a user's own Ollama app is left alone."""
+    if _ollama_proc and _ollama_proc.poll() is None:
+        _ollama_proc.terminate()
 
 
 def _llm(key):

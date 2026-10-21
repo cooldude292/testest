@@ -1,0 +1,150 @@
+"""End-to-end checks run against the packaged app on a real Mac (CI), before anyone downloads it.
+
+Usage: Clipworks.app/Contents/MacOS/Clipworks --selftest [--llm]
+"""
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import traceback
+from pathlib import Path
+
+results = []
+
+
+def check(name):
+    def wrap(fn):
+        def run(*a):
+            t = time.time()
+            try:
+                detail = fn(*a) or ""
+                results.append((name, True, f"{detail} ({time.time() - t:.1f}s)"))
+            except Exception:
+                results.append((name, False, traceback.format_exc()[-1500:]))
+        return run
+    return wrap
+
+
+class Ctx:
+    def stage(self, *a):
+        pass
+
+    def log(self, m):
+        print("   log:", m)
+
+    def check(self):
+        pass
+
+
+def run(args):
+    import os
+    os.environ["CLIPWORKS_NO_SETUP"] = "1"
+    from clipper import config
+    tmp = Path(tempfile.mkdtemp())
+    print(f"Clipworks selftest  frozen={config.FROZEN}  data={config.DATA}")
+
+    @check("bundled tools on PATH")
+    def tools():
+        found = {b: shutil.which(b) for b in ("ffmpeg", "ffprobe", "deno")}
+        missing = [b for b, p in found.items() if not p]
+        if missing:
+            raise RuntimeError(f"missing: {missing}")
+        enc = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
+        return f"{found}  videotoolbox={'h264_videotoolbox' in enc} x264={'libx264' in enc}"
+
+    @check("web UI served")
+    def web():
+        from fastapi.testclient import TestClient
+        from clipper.server import app
+        c = TestClient(app)
+        for path in ("/", "/static/app.js", "/static/app.css", "/static/vendor/hls.min.js", "/static/vendor/inter.woff2"):
+            r = c.get(path)
+            if r.status_code != 200:
+                raise RuntimeError(f"{path} -> {r.status_code}")
+        return "all assets 200"
+
+    speech = tmp / "speech.aiff"
+
+    @check("transcribe (MLX Whisper tiny)")
+    def stt():
+        subprocess.run(["say", "-o", str(speech), "This is a test of the clip factory. "
+                        "Chat is going crazy right now. Nobody expected that."], check=True)
+        import mlx.core as mx
+        try:
+            mx.eval(mx.array([1.0, 2.0]) * 2)
+        except Exception:
+            mx.set_default_device(mx.cpu)   # CI VMs have no Metal GPU
+        from clipper import config as cfg, transcribe
+        cfg.WHISPER_MODEL = "mlx-community/whisper-tiny"
+        wav = tmp / "speech.wav"
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(speech), "-ac", "1", "-ar", "16000", str(wav)], check=True)
+        words = transcribe.transcribe(wav, 6.0, Ctx())
+        text = "".join(w["w"] for w in words).lower()
+        if "clip" not in text and "chat" not in text:
+            raise RuntimeError(f"unexpected transcript: {text!r}")
+        (tmp / "words.json").write_text(json.dumps(words))
+        return f"{len(words)} words: {text.strip()[:80]}"
+
+    @check("render a vertical clip with captions")
+    def rend():
+        from clipper import render
+        src = tmp / "src.mp4"
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30:duration=8",
+                        "-i", str(speech), "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(src)],
+                       check=True)
+        words = json.loads((tmp / "words.json").read_text()) if (tmp / "words.json").exists() else \
+            [{"w": " test", "s": 0.5, "e": 1.0}]
+        clip = {"start": 0.0, "end": 6.0, "hook": "Nobody expected that", "title": "test"}
+        out = tmp / "clip.mp4"
+        render.render_clip(src, words, clip, out, tmp, "auto", Ctx(), "selftest")
+        info = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height:format=duration",
+                               "-of", "json", str(out)], capture_output=True, text=True).stdout
+        d = json.loads(info)
+        w, h = d["streams"][0]["width"], d["streams"][0]["height"]
+        if (w, h) != (1080, 1920):
+            raise RuntimeError(f"bad size {w}x{h}")
+        return f"{w}x{h} {float(d['format']['duration']):.1f}s layout={clip['layout']}"
+
+    @check("load Twitch VOD (preview + chat)")
+    def twitch():
+        from clipper import chat, sources
+        url = args[args.index("--twitch") + 1] if "--twitch" in args else None
+        if not url:
+            return "skipped (no --twitch url)"
+        info = sources.probe(url)
+        msgs = chat.fetch(info["twitch_id"], 600, 660, Ctx())
+        return f"{info['title'][:40]} preview={info['preview_type']} chat_msgs_1min={len(msgs)}"
+
+    @check("Ollama download + real LLM call")
+    def llm():
+        if "--llm" not in args:
+            return "skipped (pass --llm)"
+        from clipper import config as cfg, moments, setup_tasks
+        cfg.LLM_MODEL = "qwen3:0.6b"
+        setup_tasks._ollama("ollama")
+        setup_tasks._llm("llm")
+        words = json.loads((tmp / "words.json").read_text())
+        lines = moments.build_lines(words)
+        transcript = "\n".join(f"[{ln['i']}] (00:0{int(ln['start'])}) {ln['text']}" for ln in lines)
+        out = moments.ask_llm(moments.PROMPT.format(kind="video", signal_help="", k=1, min_len=2, max_len=10,
+                                                    transcript=transcript))
+        setup_tasks.stop_ollama()
+        return f"reply parsed: {json.dumps(out)[:160]}"
+
+    for fn in (tools, web, stt, rend, twitch, llm):
+        fn()
+
+    print("\n=== SELFTEST RESULTS ===")
+    ok = True
+    for name, passed, detail in results:
+        ok &= passed
+        print(f"{'PASS' if passed else 'FAIL'}  {name}: {detail}")
+    shutil.rmtree(tmp, ignore_errors=True)
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(run(sys.argv[1:]))
