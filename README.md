@@ -19,32 +19,49 @@ footage while that runs; the factory starts once they're ready.
 
 ## How it works
 
-**Workbench.** Paste a Twitch, YouTube or Kick link, or open a file. It plays right
-there. Under the player is a timeline:
+It's a production console: a command line at the top, four modules on
+<kbd>F1</kbd>–<kbd>F4</kbd>, and a status bar at the bottom showing what the factory is doing.
 
-- Twitch: a heatmap of chat activity for the whole stream (built from the chat replay,
-  about a minute for a 4 hour stream). Hot spots are listed on the right.
+**F1 Workbench.** Paste a Twitch, YouTube or Kick link into the command line and press
+GO (or Enter), or use Open file. The source plays in the monitor. Under it is the
+signal timeline:
+
+- Twitch: chat density for the whole stream, built from the chat replay (about a
+  minute for a 4 hour stream). The strongest stretches are listed under Signal Peaks.
 - YouTube: the "most replayed" graph, when YouTube has one.
-- Drag on the timeline to select a range, drag the edges to trim, or use
-  <kbd>I</kbd> / <kbd>O</kbd> to mark in and out at the playhead. <kbd>Space</kbd> plays,
-  <kbd>J</kbd>/<kbd>L</kbd> jump 10 seconds, arrow keys 5 (shift for 60).
+- Drag on the timeline to select a range, drag the edges to trim, or mark In and Out
+  at the playhead with <kbd>I</kbd> / <kbd>O</kbd>. <kbd>Space</kbd> plays,
+  <kbd>J</kbd>/<kbd>L</kbd> jump 10 seconds, arrows 5 (shift for 60), <kbd>/</kbd> jumps
+  to the command line.
 
-Pick how many clips, how long, and the layout, then **Send to Factory**. Nothing is
-transcribed up front. Only the range you sent gets downloaded and processed.
+Then fill in the work order and **Dispatch to Factory**:
+- **AI selection**: the factory finds the best clips inside your range (you pick how
+  many and how long).
+- **Exact cut**: your range is the clip (3 seconds to 3 minutes). The factory just
+  reframes it, captions it and writes the hook.
 
-**Factory.** Each work order moves through the stations:
-Intake (download just that range) → Audio → Chat → Transcribe (Whisper on the
-GPU) → Analysis (local LLM picks moments using the transcript, chat spikes and
-loudness, then ranks them and writes hooks) → Assembly (reframe, captions, encode).
+Nothing is transcribed up front. Only the range you dispatched gets downloaded and processed.
 
-**Inventory.** Finished clips, searchable and sortable. They're also copied to
-`~/Movies/Clipworks/WO-1234 <title>/`.
+**F2 Factory.** Work orders (WO-1001, WO-1002...) on a production line. Each one moves
+through Intake (download just that range) → Audio → Chat → Transcribe (Whisper on the
+GPU) → Analysis (local LLM picks moments from the transcript, chat spikes and
+loudness, ranks them, writes hooks) → Assembly (reframe, captions, encode). Select an
+order to see its stations, spec and production log.
+
+**F3 Inventory.** Every finished clip with score, hook, source timecode and layout.
+Select one to play it, read the rationale and transcript, download it or reveal it in
+Finder. Clips are also copied to `~/Movies/Clipworks/WO-1234 <title>/`.
+
+**F4 System.** Model provisioning and configuration.
+
+Commands you can type: a URL or file path, `WB` `FAC` `INV` `SYS`, `IN`, `OUT`, `SEND`,
+`WO 1001`, `HELP`.
 
 Layouts, picked automatically unless you choose one:
-- **Facecam over gameplay** when there's a webcam overlay
+- **Facecam / gameplay** when there's a webcam overlay
 - **Follow speaker** for podcasts and just chatting
 - **Gameplay zoom** when there are no faces
-- **Full frame, blurred fill** and **Center crop** if you want them
+- **Full frame / blur** and **Center crop** if you want them
 
 ## Building
 
