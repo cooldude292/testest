@@ -6,11 +6,12 @@ import threading
 import time
 import traceback
 import uuid
+from pathlib import Path
 
-from . import config, download, moments, render, setup_tasks, transcribe
+from . import chat, config, download, moments, render, setup_tasks, transcribe
 from .util import ffmpeg
 
-STAGES = ["download", "audio", "transcribe", "moments", "render"]
+STAGES = ["download", "audio", "chat", "transcribe", "moments", "render"]
 
 
 class Cancelled(Exception):
@@ -124,6 +125,18 @@ class Manager:
                 j.status, j.message = "cancelled", "Cancelled"
                 j.save(force=True)
 
+    def retry(self, jid):
+        j = self.jobs.get(jid)
+        if not j or j.status not in ("failed", "cancelled"):
+            return False
+        j.status, j.stage, j.progress, j.error, j.clips = "queued", "", None, "", []
+        j.cancel_requested = False
+        j.message = "Waiting in line"
+        j.log("Retrying (reusing anything already downloaded)")
+        j.save(force=True)
+        self.q.put(j.id)
+        return True
+
     def list(self):
         with self.lock:
             return sorted((j.to_dict() for j in self.jobs.values()), key=lambda d: -d["created"])
@@ -172,7 +185,13 @@ def run_pipeline(job, ctx):
     o = job.options
     job.dir.mkdir(parents=True, exist_ok=True)
 
-    src, title = download.fetch(job.source, job.dir, o.get("section"), ctx)
+    saved = job.dir / "download.json"
+    if saved.exists() and Path(json.loads(saved.read_text())["src"]).exists():
+        d = json.loads(saved.read_text())  # retry: reuse what we already downloaded
+        src, title, meta = Path(d["src"]), d["title"], d["meta"]
+    else:
+        src, title, meta = download.fetch(job.source, job.dir, o.get("section"), ctx)
+        saved.write_text(json.dumps({"src": str(src), "title": title, "meta": meta}))
     job.title = title
     duration = media_duration(src)
     ctx.log(f"Got video: {title} ({duration/60:.1f} min)")
@@ -180,6 +199,21 @@ def run_pipeline(job, ctx):
     ctx.stage("audio", None, "Pulling audio out")
     audio = job.dir / "audio.wav"
     ffmpeg("-i", src, "-vn", "-ac", "1", "-ar", "16000", audio)
+
+    messages, chat_base = [], None
+    if meta.get("twitch_id"):
+        ctx.stage("chat", 0.0, "Reading Twitch chat")
+        try:
+            raw = chat.fetch(meta["twitch_id"], meta["offset"], meta["offset"] + duration, ctx)
+            messages = [(t - meta["offset"], text) for t, text in raw]
+            ctx.log(f"Read {len(messages)} chat messages")
+            if meta.get("vod_duration") and meta["vod_duration"] > duration * 1.5:
+                ctx.stage("chat", None, "Sampling chat across the whole stream for a baseline")
+                chat_base = chat.baseline_rate(meta["twitch_id"], meta["vod_duration"])
+                if chat_base:
+                    ctx.log(f"Normal chat speed for this stream: {chat_base:.1f} msg/s")
+        except Exception as ex:
+            ctx.log(f"Couldn't read Twitch chat, going without it: {ex}")
 
     tpath = job.dir / "transcript.json"
     if tpath.exists():
@@ -192,8 +226,11 @@ def run_pipeline(job, ctx):
     if not words:
         raise RuntimeError("No speech found in this video")
 
+    ctx.stage("moments", 0.0, "Checking the LLM is up")
+    setup_tasks.ensure_ollama()
     picks = moments.find_moments(words, int(o.get("max_clips", 5)), float(o.get("min_len", 20)),
-                                 float(o.get("max_len", 60)), ctx)
+                                 float(o.get("max_len", 60)), ctx, audio_path=audio, chat=messages, chat_base=chat_base,
+                                 kind="livestream" if meta.get("twitch_id") else "video")
     if not picks:
         raise RuntimeError("The LLM didn't find any clip-worthy moments")
     ctx.log(f"Picked {len(picks)} moment(s)")

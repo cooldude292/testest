@@ -16,6 +16,7 @@ CAP_SIZE = 78
 HIGHLIGHT_SCALE = 1.12
 CAP_TOP = 1300
 HOOK_TOP = 230
+SPLIT_SEAM = 640
 MAX_TEXT_W = 960
 WHITE = (255, 255, 255)
 YELLOW = (255, 215, 0)
@@ -70,7 +71,10 @@ def _blend(frame, ov, x, y):
 
 
 class Captions:
-    def __init__(self, words, clip_start, clip_end, hook=""):
+    def __init__(self, words, clip_start, clip_end, hook="", layout="track"):
+        # Split layout has a face in the top pane, so the hook sits on the seam instead.
+        self.split = layout == "split"
+        self.cap_top = 1420 if self.split else CAP_TOP
         dur = clip_end - clip_start
         local = []
         for w in words:
@@ -119,7 +123,8 @@ class Captions:
         for i, ln in enumerate(lines):
             x = (bw - font.getlength(ln)) / 2
             d.text((x, pad + i * lh), ln, font=font, fill=BLACK + (255,))
-        return _to_bgra(img), (config.OUT_W - bw) // 2, HOOK_TOP
+        y = SPLIT_SEAM - bh // 2 if self.split else HOOK_TOP
+        return _to_bgra(img), (config.OUT_W - bw) // 2, y
 
     def _render_event(self, words, hi):
         space = self.font.getlength(" ")
@@ -163,4 +168,4 @@ class Captions:
                 ov = self.cache.get(self.ptr)
                 if ov is None:
                     ov = self.cache[self.ptr] = self._render_event(words, hi)
-                _blend(frame, ov, 0, CAP_TOP)
+                _blend(frame, ov, 0, self.cap_top)

@@ -49,7 +49,8 @@ def _fmt_bytes(n):
 
 
 def fetch(source, job_dir, section, ctx):
-    """Returns (path_to_video, title)."""
+    """Returns (path_to_video, title, meta). meta["offset"] is where the file starts in the
+    original video (seconds); meta["twitch_id"] is set for Twitch VODs so chat can be pulled."""
     source = source.strip()
     rng = parse_section(section)
 
@@ -58,14 +59,14 @@ def fetch(source, job_dir, section, ctx):
         if not path.is_file():
             raise FileNotFoundError(f"No such file: {path}")
         if not rng:
-            return path, path.stem
+            return path, path.stem, {"offset": 0.0, "twitch_id": None}
         ctx.stage("download", None, "Cutting the time range out of the local file")
         out = job_dir / "source.mp4"
         args = ["-ss", rng[0], "-i", path]
         if rng[1] is not None:
             args += ["-t", rng[1] - rng[0]]
         ffmpeg(*args, "-c", "copy", out)
-        return out, path.stem
+        return out, path.stem, {"offset": rng[0], "twitch_id": None}
 
     def hook(d):
         ctx.check()
@@ -112,8 +113,10 @@ def fetch(source, job_dir, section, ctx):
             info = info["entries"][0]
         if not info.get("requested_formats") and str(info.get("protocol", "")).startswith("m3u8"):
             out = job_dir / "source.mp4"
-            if _hls_slice(info, rng, job_dir, out, ctx):
-                return out, info.get("title") or "video"
+            offset = _hls_slice(info, rng, job_dir, out, ctx)
+            if offset is not None:
+                return out, info.get("title") or "video", {"offset": offset, "twitch_id": _twitch_id(info),
+                                                          "vod_duration": info.get("duration")}
     info = _extract_with_cookie_fallback(source, opts, ctx)
     if info.get("_type") == "playlist" and info.get("entries"):
         info = info["entries"][0]
@@ -126,7 +129,15 @@ def fetch(source, job_dir, section, ctx):
         if not candidates:
             raise RuntimeError("yt-dlp finished but no file showed up")
         path = candidates[-1]
-    return path, info.get("title") or "video"
+    meta = {"offset": rng[0] if rng else 0.0, "twitch_id": _twitch_id(info),
+            "vod_duration": info.get("duration")}
+    return path, info.get("title") or "video", meta
+
+
+def _twitch_id(info):
+    if info.get("extractor_key") == "TwitchVod" and info.get("id"):
+        return str(info["id"]).lstrip("v")
+    return None
 
 
 BROWSERS = ("chrome", "safari", "firefox", "brave", "edge", "arc")
@@ -163,12 +174,12 @@ def _extract_with_cookie_fallback(source, opts, ctx, download=True):
 
 
 def _hls_slice(fmt, rng, job_dir, out, ctx):
-    """Download just the HLS segments covering rng. Returns False if the playlist is
-    something we don't handle (encrypted, master playlist), so the caller falls back to yt-dlp."""
+    """Download just the HLS segments covering rng and return where the file starts (seconds).
+    Returns None for playlists we don't handle (encrypted, master), so the caller falls back to yt-dlp."""
     url, headers = fmt["url"], fmt.get("http_headers") or {}
     text = requests.get(url, headers=headers, timeout=30).text
     if "#EXT-X-STREAM-INF" in text or re.search(r"#EXT-X-KEY:(?!METHOD=NONE)", text):
-        return False
+        return None
     init, segs, t, dur = None, [], 0.0, 0.0
     for ln in text.splitlines():
         ln = ln.strip()
@@ -176,7 +187,7 @@ def _hls_slice(fmt, rng, job_dir, out, ctx):
             m = re.search(r'URI="([^"]+)"', ln)
             u = urljoin(url, m.group(1)) if m else None
             if init and u != init:
-                return False  # init changes mid-stream; not worth handling here
+                return None  # init changes mid-stream; not worth handling here
             init = u
         elif ln.startswith("#EXTINF:"):
             dur = float(ln[8:].split(",")[0] or 0)
@@ -230,4 +241,4 @@ def _hls_slice(fmt, rng, job_dir, out, ctx):
         p.unlink()
     parts.rmdir()
     ctx.log(f"Grabbed {len(pick)} chunks ({pick[0][0]/60:.1f}-{(pick[-1][0]+pick[-1][1])/60:.1f} min)")
-    return True
+    return pick[0][0]

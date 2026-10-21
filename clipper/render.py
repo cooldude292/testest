@@ -27,8 +27,8 @@ def cut_segment(src, start, end, out):
            "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-c:a", "aac", "-b:a", "192k", out)
 
 
-def _fit_frame(frame):
-    """Whole frame centered on a blurred, zoomed copy of itself."""
+def _blur_bg(frame):
+    """Darkened, blurred copy of the frame zoomed to cover the whole 9:16 canvas."""
     OW, OH = config.OUT_W, config.OUT_H
     h, w = frame.shape[:2]
     cover = max(OW / w, OH / h)
@@ -37,13 +37,47 @@ def _fit_frame(frame):
     small = cv2.GaussianBlur(small, (0, 0), 4)
     bg = cv2.resize(small, (bw, bh), interpolation=cv2.INTER_LINEAR)
     x0, y0 = (bw - OW) // 2, (bh - OH) // 2
-    bg = (bg[y0:y0 + OH, x0:x0 + OW] * 0.55).astype(np.uint8)
+    return (bg[y0:y0 + OH, x0:x0 + OW] * 0.55).astype(np.uint8)
+
+
+def _fit_frame(frame):
+    """Whole frame centered on a blurred, zoomed copy of itself."""
+    OW, OH = config.OUT_W, config.OUT_H
+    h, w = frame.shape[:2]
+    bg = _blur_bg(frame)
     fit = min(OW / w, OH / h)
     fw, fh = int(w * fit) // 2 * 2, int(h * fit) // 2 * 2
     fg = cv2.resize(frame, (fw, fh), interpolation=cv2.INTER_AREA)
     ox, oy = (OW - fw) // 2, (OH - fh) // 2
     bg[oy:oy + fh, ox:ox + fw] = fg
     return bg
+
+
+def _zoom_frame(frame):
+    """Middle of the gameplay, big, on a blurred background."""
+    OW, OH = config.OUT_W, config.OUT_H
+    h, w = frame.shape[:2]
+    cw = min(w, int(h * reframe.ZOOM_ASPECT))
+    x0 = (w - cw) // 2
+    th = int(OW / reframe.ZOOM_ASPECT) // 2 * 2
+    fg = cv2.resize(frame[:, x0:x0 + cw], (OW, th), interpolation=cv2.INTER_LINEAR)
+    bg = _blur_bg(frame)
+    oy = (OH - th) // 2
+    bg[oy:oy + th] = fg
+    return bg
+
+
+def _split_frame(frame, cam):
+    """Facecam on top, middle of the gameplay underneath."""
+    OW, OH, TOP = config.OUT_W, config.OUT_H, reframe.SPLIT_TOP
+    h, w = frame.shape[:2]
+    x, y, cw_, ch_ = cam
+    top = cv2.resize(frame[y:y + ch_, x:x + cw_], (OW, TOP), interpolation=cv2.INTER_LINEAR)
+    bh = OH - TOP
+    gw = min(w, int(h * OW / bh))
+    gx = (w - gw) // 2
+    bottom = cv2.resize(frame[:, gx:gx + gw], (OW, bh), interpolation=cv2.INTER_LINEAR)
+    return np.vstack([top, bottom])
 
 
 def render_clip(src, words, clip, out_path, work_dir, layout, ctx, label):
@@ -54,7 +88,7 @@ def render_clip(src, words, clip, out_path, work_dir, layout, ctx, label):
     ctx.stage("render", None, f"{label}: finding faces")
     plan = reframe.analyze(seg, layout, ctx)
     clip["layout"] = plan["mode"]
-    caps = captions.Captions(words, clip["start"], clip["end"], clip.get("hook", ""))
+    caps = captions.Captions(words, clip["start"], clip["end"], clip.get("hook", ""), plan["mode"])
 
     OW, OH = config.OUT_W, config.OUT_H
     cmd = ["ffmpeg", "-y", "-v", "error",
@@ -76,6 +110,10 @@ def render_clip(src, words, clip, out_path, work_dir, layout, ctx, label):
                 break
             if plan["mode"] == "fit":
                 out = _fit_frame(frame)
+            elif plan["mode"] == "zoom":
+                out = _zoom_frame(frame)
+            elif plan["mode"] == "split":
+                out = _split_frame(frame, plan["facecam"])
             else:
                 x = xs[min(i, len(xs) - 1)]
                 x0 = int(round(x - cw / 2))

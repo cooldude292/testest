@@ -1,7 +1,10 @@
 """Ask the local LLM which parts of the transcript would make good short clips."""
 import json
 import re
+import wave
+from collections import Counter
 
+import numpy as np
 import requests
 
 from . import config
@@ -14,28 +17,60 @@ SYSTEM = (
     "go viral as standalone TikToks, YouTube Shorts and Reels. You are picky."
 )
 
-PROMPT = """Below is a transcript excerpt. Each line is: [line_id] (mm:ss) text
+PROMPT = """Below is a transcript excerpt from a {kind}. Each line is: [line_id] (mm:ss) text
+{signal_help}
+Find up to {k} moments that would work as standalone vertical clips of {min_len}-{max_len} seconds.
 
-Find up to {k} moments that work as standalone vertical clips of {min_len}-{max_len} seconds.
+What goes viral:
+- Big reactions: rage, screaming, hype, panic, laughing fits
+- Fails, unexpected twists, things going horribly wrong
+- Hot takes, roasts, arguments, someone getting called out
+- Wild stories with a payoff, shocking facts, confessions
 
-A great clip:
-- Makes sense with zero context. No "he said that", no references to things explained earlier.
-- Starts on a strong line: a bold claim, a question, tension, or a story opening. Never starts mid-thought or on filler like "so yeah" or "anyway".
-- Has a payoff: a punchline, a surprising fact, a hot take, conflict, emotion, or a story that resolves.
-- Ends right after the payoff instead of trailing off.
-Skip intros, outros, sponsor reads, housekeeping and rambling.
+Boring, never pick these: menus, loading screens, settings, downloads, reading patch notes or chat, small talk, explaining controls, "anyway let's go", sponsor reads, intros, outros.
+
+A great clip also:
+- Makes sense with zero context.
+- Starts on a strong line, never mid-thought or on filler.
+- Ends right after the payoff.
 
 For each clip give:
 - start_line and end_line (inclusive line ids from the transcript)
-- title: max 8 words
-- hook: on-screen text for the top of the video, max 10 words, punchy, makes people stay. No emojis, no hashtags.
-- score: virality 0-100. Be harsh. Most moments are under 60.
-- reason: one sentence on why it works
+- title: plain description for reference, max 8 words
+- hook: the on-screen text at the top. It must NOT describe the clip and must NOT repeat the title. It creates curiosity or tension so people keep watching. Good: "He was NOT ready for this", "Chat saw it before he did", "Nobody expected him to say this". Bad: "Call of Duty gameplay", "Talking about downloads". Max 10 words, no emojis, no hashtags.
+- score: virality 0-100. Be brutal: anything boring is under 30, only real bangers go above 80.
+- reason: one sentence
 
-If nothing here is good, return an empty list.
+If nothing here is actually good, return an empty list. An empty list beats a boring clip.
 
 TRANSCRIPT:
 {transcript}"""
+
+SIGNAL_HELP = """Some lines carry signals in curly braces. {chat x3.2: KEKW, LMAO} means chat was 3.2x busier than normal right after that line, with its most spammed messages. {LOUD} means the speaker got much louder than usual. Chat spikes are the strongest sign something clip-worthy just happened, so look hard at those spots.
+"""
+
+RERANK = """These are candidate short clips cut from the same {kind}. Rank how likely each one is to actually blow up on TikTok and YouTube Shorts. Be brutal: a clip only scores high if a random person scrolling would stop and watch to the end.
+
+For every candidate return its id, a new score 0-100, and the best hook you can write: on-screen curiosity text, max 10 words, not a description, not the title.
+
+CANDIDATES:
+{items}"""
+
+RERANK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ranked": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"id": {"type": "integer"}, "score": {"type": "integer"},
+                               "hook": {"type": "string"}},
+                "required": ["id", "score", "hook"],
+            },
+        }
+    },
+    "required": ["ranked"],
+}
 
 SCHEMA = {
     "type": "object",
@@ -108,12 +143,12 @@ def _mmss(t):
     return f"{t//3600}:{t%3600//60:02d}:{t%60:02d}" if t >= 3600 else f"{t//60:02d}:{t%60:02d}"
 
 
-def ask_llm(prompt):
+def ask_llm(prompt, schema=SCHEMA):
     body = {
         "model": config.LLM_MODEL,
         "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
         "stream": False,
-        "format": SCHEMA,
+        "format": schema,
         "think": False,
         "keep_alive": "15m",
         "options": {"temperature": 0.3, "num_ctx": config.LLM_CONTEXT, "num_predict": 3000},
@@ -144,11 +179,11 @@ def parse_json(text):
             obj = json.loads(m.group(0))
         except json.JSONDecodeError:
             continue
-        if "start_line" in obj:
+        if "start_line" in obj or "id" in obj:
             clips.append(obj)
     if not clips:
         raise ValueError("LLM reply wasn't usable JSON")
-    return {"clips": clips}
+    return {"clips": clips, "ranked": clips}
 
 
 def fit_length(lines, s, e, min_len, max_len):
@@ -162,18 +197,88 @@ def fit_length(lines, s, e, min_len, max_len):
     return s, e
 
 
-def find_moments(words, max_clips, min_len, max_len, ctx):
+def annotate(lines, audio_path=None, chat=None, chat_base=None):
+    """Attach loudness and chat-spike signals to each line."""
+    if audio_path:
+        with wave.open(str(audio_path)) as wf:
+            sr = wf.getframerate()
+            dbs = []
+            for ln in lines:
+                wf.setpos(min(int(ln["start"] * sr), max(0, wf.getnframes() - 1)))
+                n = max(1, int((ln["end"] - ln["start"]) * sr))
+                a = np.frombuffer(wf.readframes(n), np.int16).astype(np.float32)
+                dbs.append(20 * np.log10(np.sqrt(np.mean(a * a)) + 1.0) if a.size else 0.0)
+        median = float(np.median(dbs)) if dbs else 0.0
+        for ln, db in zip(lines, dbs):
+            ln["loud"] = db > median + 6
+    if chat:
+        times = np.array([t for t, _ in chat])
+        span = max(1.0, lines[-1]["end"] - lines[0]["start"])
+        base = max(chat_base or len(chat) / span, 1e-3)
+        for ln in lines:
+            # Chat reacts a few seconds late, so look just past the line too.
+            a, b = ln["start"] + 1, ln["end"] + 8
+            lo, hi = np.searchsorted(times, a), np.searchsorted(times, b)
+            ratio = (hi - lo) / (b - a) / base
+            ln["chat"] = round(float(ratio), 1)
+            if ratio >= 1.8:
+                words = Counter()
+                for _, text in chat[lo:hi]:
+                    for w in set(text.split()[:4]):
+                        words[w[:20]] += 1
+                ln["chat_top"] = [w for w, c in words.most_common(3) if c >= 2]
+
+
+def _signals(ln):
+    bits = []
+    if ln.get("chat", 0) >= 1.8:
+        top = ", ".join(ln.get("chat_top") or [])
+        bits.append(f"chat x{ln['chat']}" + (f": {top}" if top else ""))
+    if ln.get("loud"):
+        bits.append("LOUD")
+    return "{" + "; ".join(bits) + "} " if bits else ""
+
+
+def _signal_score(lines_in_clip, has_chat):
+    """0-100 from the raw signals, so the LLM isn't the only judge."""
+    if has_chat:
+        peak = max((ln.get("chat", 0) for ln in lines_in_clip), default=0)
+        return max(0.0, min(1.0, (peak - 1) / 3)) * 100
+    loud = sum(1 for ln in lines_in_clip if ln.get("loud"))
+    return min(1.0, loud / max(1, len(lines_in_clip)) * 3) * 100
+
+
+def _norm(x):
+    return re.sub(r"[^a-z0-9 ]", "", x.lower()).split()
+
+
+def _bad_hook(hook, title, clip_lines):
+    """Hooks that just repeat the title or quote the transcript aren't hooks."""
+    h = _norm(hook)
+    if not h or h == _norm(title):
+        return True
+    said = " " + " ".join(_norm(" ".join(ln["text"] for ln in clip_lines))) + " "
+    return len(h) >= 3 and (" " + " ".join(h) + " ") in said
+
+
+def find_moments(words, max_clips, min_len, max_len, ctx, audio_path=None, chat=None, chat_base=None,
+                 kind="video"):
     lines = build_lines(words)
     if not lines:
         return []
+    annotate(lines, audio_path, chat, chat_base)
+    has_chat = bool(chat)
     wins = windows(lines)
     per_window = max(2, min(5, max_clips))
+    help_text = SIGNAL_HELP if (has_chat or audio_path) else ""
     candidates = []
+    failed, last_error = 0, None
     for n, (s, e) in enumerate(wins):
         ctx.check()
         ctx.stage("moments", n / len(wins), f"Asking {config.LLM_MODEL} about part {n+1} of {len(wins)}")
-        transcript = "\n".join(f"[{ln['i']}] ({_mmss(ln['start'])}) {ln['text']}" for ln in lines[s:e])
-        prompt = PROMPT.format(k=per_window, min_len=min_len, max_len=max_len, transcript=transcript)
+        transcript = "\n".join(f"[{ln['i']}] ({_mmss(ln['start'])}) {_signals(ln)}{ln['text']}" for ln in lines[s:e])
+        prompt = PROMPT.format(kind=kind, signal_help=help_text, k=per_window, min_len=min_len,
+                               max_len=max_len, transcript=transcript)
         picks = None
         for attempt in (1, 2):
             try:
@@ -181,7 +286,9 @@ def find_moments(words, max_clips, min_len, max_len, ctx):
                 break
             except Exception as ex:  # one bad window shouldn't kill the job
                 ctx.log(f"LLM failed on part {n+1} (try {attempt}): {ex}")
+                last_error = ex
         if picks is None:
+            failed += 1
             continue
         for p in picks:
             try:
@@ -200,28 +307,73 @@ def find_moments(words, max_clips, min_len, max_len, ctx):
                 continue
             if dur > max_len:
                 end = start + max_len
+            title = str(p.get("title", "")).strip()[:80]
+            hook = str(p.get("hook", "")).strip()[:90]
             candidates.append({
                 "start": max(0.0, start - 0.15),
                 "end": end + 0.35,
-                "title": str(p.get("title", "")).strip()[:80],
-                "hook": str(p.get("hook", "")).strip()[:90],
-                "score": max(0, min(100, int(p.get("score") or 0))),
+                "title": title,
+                "hook": "" if _bad_hook(hook, title, lines[a:b + 1]) else hook,
+                "llm_score": max(0, min(100, int(p.get("score") or 0))),
+                "signal_score": round(_signal_score(lines[a:b + 1], has_chat)),
+                "peak_chat": max((ln.get("chat", 0) for ln in lines[a:b + 1]), default=0),
                 "reason": str(p.get("reason", "")).strip(),
                 "text": " ".join(ln["text"] for ln in lines[a:b + 1]),
             })
         ctx.log(f"Part {n+1}/{len(wins)}: {len(picks)} candidate(s)")
 
-    # Best first, drop anything that mostly overlaps a better pick.
-    candidates.sort(key=lambda c: c["score"], reverse=True)
-    chosen = []
+    if failed == len(wins):
+        raise RuntimeError(f"The LLM failed on every part, so nothing was judged. Last error: {last_error}")
+
+    # Drop near-duplicates (overlapping windows find the same moment twice).
+    candidates.sort(key=lambda c: c["llm_score"] + c["signal_score"], reverse=True)
+    unique = []
     for c in candidates:
-        overlap = any(
-            min(c["end"], o["end"]) - max(c["start"], o["start"])
-            > 0.3 * min(c["end"] - c["start"], o["end"] - o["start"])
-            for o in chosen
-        )
-        if not overlap:
-            chosen.append(c)
-        if len(chosen) >= max_clips:
-            break
-    return chosen
+        if not any(_overlap(c, o) for o in unique):
+            unique.append(c)
+    unique = unique[:max(3 * max_clips, 6)]
+    _rerank(unique, kind, ctx)
+
+    w_sig = 0.35 if has_chat else (0.15 if audio_path else 0.0)
+    for c in unique:
+        llm = c["llm_score"] if c.get("rerank_score") is None else (c["llm_score"] + c["rerank_score"]) / 2
+        c["score"] = round((1 - w_sig) * llm + w_sig * c["signal_score"])
+        if not c["hook"]:
+            c["hook"] = c["title"]
+    unique.sort(key=lambda c: c["score"], reverse=True)
+    good = [c for c in unique if c["score"] >= 35]
+    if not good and unique:
+        ctx.log("Nothing here scored well. Keeping the single best moment anyway")
+        good = unique[:1]
+    return good[:max_clips]
+
+
+def _overlap(a, b):
+    inter = min(a["end"], b["end"]) - max(a["start"], b["start"])
+    return inter > 0.3 * min(a["end"] - a["start"], b["end"] - b["start"])
+
+
+def _rerank(cands, kind, ctx):
+    """Second opinion: let the LLM compare all candidates side by side and rewrite the hooks."""
+    if len(cands) < 2:
+        return
+    ctx.stage("moments", 0.95, f"Ranking the {len(cands)} best candidates against each other")
+    items = []
+    for i, c in enumerate(cands):
+        sig = f"chat x{c['peak_chat']}, " if c["peak_chat"] >= 1.8 else ""
+        text = c["text"] if len(c["text"]) <= 600 else c["text"][:600] + "..."
+        items.append(f"[id {i}] ({sig}{c['end'] - c['start']:.0f}s) \"{text}\"")
+    try:
+        ranked = ask_llm(RERANK.format(kind=kind, items="\n".join(items)), RERANK_SCHEMA).get("ranked", [])
+    except Exception as ex:
+        ctx.log(f"Ranking pass failed, keeping first-pass scores: {ex}")
+        return
+    for r in ranked:
+        try:
+            c = cands[int(r["id"])]
+        except (KeyError, ValueError, TypeError, IndexError):
+            continue
+        c["rerank_score"] = max(0, min(100, int(r.get("score") or 0)))
+        hook = str(r.get("hook", "")).strip()[:90]
+        if hook and not _bad_hook(hook, c["title"], [{"text": c["text"]}]):
+            c["hook"] = hook

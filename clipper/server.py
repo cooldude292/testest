@@ -34,8 +34,8 @@ def _options(section, max_clips, min_len, max_len, layout):
         parse_section(section)
     except ValueError as ex:
         raise HTTPException(400, str(ex))
-    if layout not in ("auto", "track", "fit", "center"):
-        raise HTTPException(400, "layout must be auto, track, fit or center")
+    if layout not in ("auto", "track", "split", "zoom", "fit", "center"):
+        raise HTTPException(400, "layout must be auto, track, split, zoom, fit or center")
     min_len, max_len = max(5, min_len), max(min_len + 5, max_len)
     return {"section": section, "max_clips": max(1, min(30, max_clips)), "min_len": min_len,
             "max_len": max_len, "layout": layout}
@@ -80,6 +80,13 @@ def upload(file: UploadFile = File(...), section: str = Form(""), max_clips: int
 @app.post("/api/jobs/{jid}/cancel")
 def cancel(jid: str):
     manager.cancel(jid)
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{jid}/retry")
+def retry(jid: str):
+    if not manager.retry(jid):
+        raise HTTPException(400, "Only failed or cancelled jobs can be retried")
     return {"ok": True}
 
 

@@ -21,16 +21,27 @@ updates the code and keeps your models and clips.
 ## What happens to a video
 
 1. **Download**: yt-dlp, capped at 1080p. Use "Only this part" (like `1:00:00-1:45:00`)
-   on long streams so you don't pull an 8 hour VOD.
-2. **Transcribe**: Whisper large-v3-turbo through MLX, word-level timestamps.
-3. **Find moments**: the transcript goes to a local LLM (`qwen3:8b` via Ollama) in
-   ~8 minute chunks. It picks standalone moments, writes a title and a hook, and scores them.
-4. **Render**: faces are tracked with OpenCV's YuNet. The crop follows whoever's
-   mouth is moving, frames the group when everyone fits, and falls back to a
-   blurred "fit" layout when there are no big faces (gameplay, slides).
-   Captions are drawn on, then encoded with the Mac's hardware encoder.
+   on long streams. For Twitch and Kick it grabs just the chunks in that range, in
+   parallel, so 10 minutes out of an 8 hour VOD takes seconds.
+2. **Chat** (Twitch only): pulls the chat replay for that range, plus a sample of
+   the whole stream to know what "normal" chat speed is. Chat spiking is the best
+   sign something happened.
+3. **Transcribe**: Whisper large-v3-turbo through MLX, word-level timestamps.
+4. **Find moments**: the transcript goes to a local LLM (`qwen3:8b` via Ollama) in
+   ~8 minute chunks, with chat spikes and loud moments marked on each line. Then a
+   second pass ranks all the candidates against each other and rewrites the hooks.
+   The final score mixes the LLM's opinion with the raw chat/loudness signals, and
+   anything that scores under 35 gets dropped.
+5. **Render**, with the layout picked automatically:
+   - **follow faces**: big faces on screen (podcasts, just chatting). The crop follows
+     whoever's mouth is moving and frames the group when everyone fits.
+   - **facecam top, game bottom**: a small face that stays in one spot is a webcam
+     overlay, so it goes on top and the middle of the gameplay goes underneath.
+   - **zoom into gameplay**: no faces at all. Crops into the middle of the game.
+   - **fit + blur** and **center crop** are there if you want to force them.
 
-Clips land in `~/Clipper/workspace/jobs/<job>/clip_01.mp4` and so on.
+Clips land in `~/Clipper/workspace/jobs/<job>/clip_01.mp4` and so on. Failed jobs have a
+Retry button that reuses the download and transcript.
 
 ## Knobs
 
@@ -51,6 +62,8 @@ Set these before `start.sh`, e.g. `CLIPPER_LLM=qwen3:14b ~/Clipper/start.sh`.
   macOS may pop a Keychain prompt for that; allow it.
 - Speaker tracking watches mouths, not audio. Fast back-and-forth or people
   chewing gum can fool it. Pick "center crop" or "fit + blur" if it gets weird.
-- Streamer facecams in a corner are ignored on purpose, so streams come out as
-  "fit + blur" for now. A proper facecam-on-top split layout is the obvious next step.
+- A really tiny facecam might not get detected, and then you get the gameplay zoom
+  instead of the split.
+- Reaction content (streamer watching a video) can come out confusing, because the clip
+  shows the reaction but the thing they're reacting to is off to the side.
 - The LLM's virality score is a guess. Watch the clips.

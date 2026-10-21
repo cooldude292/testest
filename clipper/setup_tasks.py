@@ -179,3 +179,9 @@ def _whisper(key):
     finally:
         done_flag.set()
     _set(key, message="Downloaded")
+
+
+def ensure_ollama():
+    """Ollama can quit between jobs (laptop sleep, app closed). Bring it back if so."""
+    if not _ollama_up():
+        _ollama("ollama")

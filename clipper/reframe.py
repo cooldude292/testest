@@ -1,12 +1,21 @@
-"""Work out where to point a 9:16 crop: follow whoever is talking, or fall back to a blurred fit."""
+"""Decide how to turn a wide video into 9:16.
+
+track: follow whoever is talking (podcasts, interviews, just chatting)
+split: streamer facecam on top, gameplay below
+zoom:  no faces at all, so crop into the middle of the gameplay
+fit:   whole frame on a blurred background
+"""
 import cv2
 import numpy as np
 
 from . import config
 
 SAMPLES_PER_SEC = 6
-DETECT_WIDTH = 640
-MIN_FACE_FRAC = 0.06      # faces narrower than this share of the frame are ignored (crowds, facecams)
+DETECT_WIDTH = 960
+MIN_FACE_FRAC = 0.06      # narrower faces don't count as "main" faces (crowds, facecams)
+SMALL_FACE_FRAC = 0.012   # smallest face we'll consider as a facecam
+SPLIT_TOP = 640           # height of the facecam pane in split layout
+ZOOM_ASPECT = 0.9         # width/height of the gameplay crop in zoom layout
 SWITCH_HOLD = 1.2         # seconds to stay on a speaker before allowing a switch
 SWITCH_MARGIN = 1.35      # new speaker must be this much more active to steal focus
 
@@ -59,6 +68,7 @@ def analyze(video_path, layout="auto", ctx=None):
     step = max(1, int(round(fps / SAMPLES_PER_SEC)))
     tracks, next_id = [], 0
     samples = []          # (frame_idx, target_x or None, track_id)
+    smalls = []           # (cx, cy, w) of small faces, detection coords
     focus, focus_since = None, -1e9
     with_face = 0
     idx = 0
@@ -76,7 +86,11 @@ def analyze(video_path, layout="auto", ctx=None):
         small = cv2.resize(frame, (dw, dh))
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
         _, faces = det.detect(small)
-        faces = [] if faces is None else [f for f in faces if f[2] >= MIN_FACE_FRAC * dw]
+        all_faces = [] if faces is None else list(faces)
+        faces = [f for f in all_faces if f[2] >= MIN_FACE_FRAC * dw]
+        for f in all_faces:
+            if SMALL_FACE_FRAC * dw <= f[2] < MIN_FACE_FRAC * dw:
+                smalls.append((f[0] + f[2] / 2, f[1] + f[3] / 2, f[2]))
 
         # Match detections to tracks by nearest center.
         seen = []
@@ -128,10 +142,34 @@ def analyze(video_path, layout="auto", ctx=None):
     n = max(n, idx)
     base["n"] = n
 
-    if layout == "auto" and (not samples or with_face / len(samples) < 0.4):
-        return {**base, "mode": "fit", "xs": None}
+    face_frac = with_face / len(samples) if samples else 0.0
+    if layout == "track" or (layout == "auto" and face_frac >= 0.4):
+        return {**base, "mode": "track", "xs": _smooth(samples, n, W, crop_w, fps)}
+    cam = _find_facecam(smalls, len(samples), scale, W, H) if layout in ("auto", "split") else None
+    if cam:
+        return {**base, "mode": "split", "xs": None, "facecam": cam}
+    return {**base, "mode": "zoom", "xs": None}
 
-    return {**base, "mode": "track", "xs": _smooth(samples, n, W, crop_w, fps)}
+
+def _find_facecam(smalls, n_samples, scale, W, H):
+    """A small face that sits in the same spot most of the time is a webcam overlay.
+    Returns the (x, y, w, h) box to show in the top pane, in source pixels."""
+    if n_samples == 0 or len(smalls) < 0.3 * n_samples:
+        return None
+    a = np.array(smalls)
+    cx, cy, fw = np.median(a[:, 0]), np.median(a[:, 1]), np.median(a[:, 2])
+    near = np.abs(a[:, 0] - cx) + np.abs(a[:, 1] - cy) < fw
+    if near.sum() < 0.3 * n_samples:
+        return None
+    cx, cy, fw = cx / scale, cy / scale, fw / scale
+    rw = min(W, 4.5 * fw)
+    rh = rw * SPLIT_TOP / config.OUT_W
+    if rh > H:
+        rh = H
+        rw = rh * config.OUT_W / SPLIT_TOP
+    x0 = int(max(0, min(W - rw, cx - rw / 2)))
+    y0 = int(max(0, min(H - rh, cy - rh * 0.5)))
+    return x0, y0, int(rw), int(rh)
 
 
 def _smooth(samples, n, W, crop_w, fps):

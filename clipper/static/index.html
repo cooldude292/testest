@@ -70,6 +70,8 @@
           <select id="layout">
             <option value="auto">auto</option>
             <option value="track">follow faces</option>
+            <option value="split">facecam top, game bottom</option>
+            <option value="zoom">zoom into gameplay</option>
             <option value="fit">fit + blur</option>
             <option value="center">center crop</option>
           </select>
@@ -86,8 +88,8 @@
   </section>
 </main>
 <script>
-const STAGES = ["download", "audio", "transcribe", "moments", "render"];
-const STAGE_NAMES = {download: "Download", audio: "Audio", transcribe: "Transcribe", moments: "Find moments", render: "Render"};
+const STAGES = ["download", "audio", "chat", "transcribe", "moments", "render"];
+const STAGE_NAMES = {download: "Download", audio: "Audio", chat: "Chat", transcribe: "Transcribe", moments: "Find moments", render: "Render"};
 const ICON = {pending: "·", running: "◐", ok: "✓", error: "✗"};
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -125,6 +127,7 @@ function clipCard(job, c) {
     <div class="msg">${fmt(c.start)} – ${fmt(c.end)} · ${Math.round(c.end - c.start)}s · ${esc(c.layout || "")}</div>
     <div class="msg">Hook: ${esc(c.hook)}</div>
     <div class="msg">${esc(c.reason)}</div>
+    <div class="msg">LLM ${c.llm_score ?? "-"}${c.rerank_score != null ? " / rerank " + c.rerank_score : ""} · signals ${c.signal_score ?? "-"}${c.peak_chat >= 1.8 ? " · chat x" + c.peak_chat : ""}</div>
     <a href="${url}" download>Download</a></div></div>`;
 }
 
@@ -140,10 +143,11 @@ function renderJobs(jobs) {
       el = document.createElement("div");
       el.className = "job"; el.dataset.id = j.id; el.dataset.nclips = "-1";
       el.innerHTML = `<div class="job-head"><span class="job-title"></span><span class="badge"></span>
-        <button class="ghost cancel">Cancel</button><button class="ghost reveal">Open folder</button></div>
+        <button class="ghost cancel">Cancel</button><button class="ghost retry">Retry</button><button class="ghost reveal">Open folder</button></div>
         <div class="steps"></div><div class="bar"><i></i></div><div class="msg status-msg"></div>
         <details><summary>Log</summary><pre></pre></details><div class="clips"></div>`;
       $(".cancel", el).onclick = () => fetch(`/api/jobs/${j.id}/cancel`, {method: "POST"});
+      $(".retry", el).onclick = () => fetch(`/api/jobs/${j.id}/retry`, {method: "POST"});
       $(".reveal", el).onclick = async () => { const r = await (await fetch(`/api/jobs/${j.id}/reveal`, {method: "POST"})).json(); if (!navigator.platform.startsWith("Mac")) alert(r.path); };
       box.appendChild(el);
     }
@@ -151,6 +155,7 @@ function renderJobs(jobs) {
     $(".job-title", el).textContent = j.title || j.source;
     const b = $(".badge", el); b.textContent = j.status; b.className = "badge " + (j.status === "done" ? "ok" : j.status);
     $(".cancel", el).style.display = (j.status === "running" || j.status === "queued") ? "" : "none";
+    $(".retry", el).style.display = (j.status === "failed" || j.status === "cancelled") ? "" : "none";
     const cur = STAGES.indexOf(j.stage);
     $(".steps", el).innerHTML = STAGES.map((s, i) => {
       const cls = j.status === "done" || i < cur ? "past" : (i === cur && j.status === "running" ? "cur" : "");
