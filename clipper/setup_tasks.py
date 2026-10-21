@@ -12,11 +12,11 @@ import requests
 from . import config
 
 STEPS = [
-    ("ffmpeg", "ffmpeg"),
-    ("faces", "Face detection model"),
-    ("ollama", "Ollama server"),
-    ("llm", f"LLM ({config.LLM_MODEL})"),
-    ("whisper", f"Whisper ({config.WHISPER_MODEL})"),
+    ("ffmpeg", "Media toolkit"),
+    ("faces", "Vision model · face detection"),
+    ("ollama", "Inference server · Ollama"),
+    ("llm", f"Language model · {config.LLM_MODEL}"),
+    ("whisper", f"Speech model · {config.WHISPER_MODEL.split('/')[-1]}"),
 ]
 
 state = {k: {"label": label, "status": "pending", "progress": None, "message": ""} for k, label in STEPS}

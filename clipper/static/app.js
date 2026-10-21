@@ -367,7 +367,8 @@ function renderInventory(force) {
     const url = `/files/${encodeURIComponent(c.job.id)}/${encodeURIComponent(c.file)}`;
     const sc = c.score >= 70 ? "hi" : c.score >= 50 ? "mid" : "";
     const at = c.abs_start != null ? c.abs_start : c.start;
-    return `<div class="card clip"><video src="${url}" controls preload="metadata" playsinline></video>
+    const poster = c.thumb ? ` poster="/files/${encodeURIComponent(c.job.id)}/${encodeURIComponent(c.thumb)}"` : "";
+    return `<div class="card clip"><video src="${url}"${poster} controls preload="none" playsinline></video>
       <div class="b"><div class="row"><span class="score ${sc}">${c.score}</span><span class="mono">WO-${c.job.order}</span><span>${Math.round(c.end - c.start)}s</span><span>${esc(c.layout || "")}</span></div>
         <div class="hk">${esc(c.hook || c.title)}</div>
         <div class="row">${esc(c.title)}</div>

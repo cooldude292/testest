@@ -269,6 +269,13 @@ def run_pipeline(job, ctx):
         render.render_clip(src, words, clip, job.dir / name, job.dir, o.get("layout", "auto"), ctx,
                            f"Clip {n}/{len(picks)}")
         clip["file"] = name
+        thumb = name.replace(".mp4", ".jpg")
+        try:
+            ffmpeg("-ss", min(1.5, (clip["end"] - clip["start"]) / 2), "-i", job.dir / name, "-frames:v", "1",
+                   "-vf", "scale=360:-2", "-q:v", "4", job.dir / thumb)
+            clip["thumb"] = thumb
+        except RuntimeError:
+            pass
         job.clips.append(clip)
         ctx.log(f"Rendered {name} ({clip['end']-clip['start']:.0f}s, score {clip['score']}, {clip['layout']})")
         job.save(force=True)
@@ -278,7 +285,7 @@ def run_pipeline(job, ctx):
 
 def _safe(name, n=60):
     name = re.sub(r'[\\/:*?"<>|\n\r]+', " ", name).strip()
-    return re.sub(r"\s+", " ", name)[:n].strip() or "clip"
+    return re.sub(r"\s+", " ", name)[:n].strip(" .") or "clip"
 
 
 def export(job):
