@@ -1,5 +1,6 @@
 """Ask the local LLM which parts of the transcript would make good short clips."""
 import json
+import re
 
 import requests
 
@@ -115,7 +116,7 @@ def ask_llm(prompt):
         "format": SCHEMA,
         "think": False,
         "keep_alive": "15m",
-        "options": {"temperature": 0.3, "num_ctx": config.LLM_CONTEXT},
+        "options": {"temperature": 0.3, "num_ctx": config.LLM_CONTEXT, "num_predict": 3000},
     }
     r = requests.post(f"{config.OLLAMA_URL}/api/chat", json=body, timeout=900)
     if r.status_code == 400 and "think" in r.text:
@@ -131,9 +132,23 @@ def parse_json(text):
     if "</think>" in text:
         text = text.split("</think>", 1)[1]
     start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end < 0:
-        return {"clips": []}
-    return json.loads(text[start:end + 1])
+    if start >= 0 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            pass
+    # Broken or cut-off JSON: keep whichever individual clip objects still parse.
+    clips = []
+    for m in re.finditer(r"\{[^{}]*\}", text):
+        try:
+            obj = json.loads(m.group(0))
+        except json.JSONDecodeError:
+            continue
+        if "start_line" in obj:
+            clips.append(obj)
+    if not clips:
+        raise ValueError("LLM reply wasn't usable JSON")
+    return {"clips": clips}
 
 
 def fit_length(lines, s, e, min_len, max_len):
@@ -159,10 +174,14 @@ def find_moments(words, max_clips, min_len, max_len, ctx):
         ctx.stage("moments", n / len(wins), f"Asking {config.LLM_MODEL} about part {n+1} of {len(wins)}")
         transcript = "\n".join(f"[{ln['i']}] ({_mmss(ln['start'])}) {ln['text']}" for ln in lines[s:e])
         prompt = PROMPT.format(k=per_window, min_len=min_len, max_len=max_len, transcript=transcript)
-        try:
-            picks = ask_llm(prompt).get("clips", [])
-        except Exception as ex:  # one bad window shouldn't kill the job
-            ctx.log(f"LLM failed on part {n+1}: {ex}")
+        picks = None
+        for attempt in (1, 2):
+            try:
+                picks = ask_llm(prompt).get("clips", [])
+                break
+            except Exception as ex:  # one bad window shouldn't kill the job
+                ctx.log(f"LLM failed on part {n+1} (try {attempt}): {ex}")
+        if picks is None:
             continue
         for p in picks:
             try:

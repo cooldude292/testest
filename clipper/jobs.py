@@ -8,6 +8,7 @@ import traceback
 import uuid
 
 from . import config, download, moments, render, setup_tasks, transcribe
+from .util import ffmpeg
 
 STAGES = ["download", "audio", "transcribe", "moments", "render"]
 
@@ -178,8 +179,7 @@ def run_pipeline(job, ctx):
 
     ctx.stage("audio", None, "Pulling audio out")
     audio = job.dir / "audio.wav"
-    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(src), "-vn", "-ac", "1", "-ar", "16000",
-                    str(audio)], check=True)
+    ffmpeg("-i", src, "-vn", "-ac", "1", "-ar", "16000", audio)
 
     tpath = job.dir / "transcript.json"
     if tpath.exists():

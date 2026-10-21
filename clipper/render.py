@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 
 from . import captions, config, reframe
+from .util import ffmpeg
 
 
 def _encoder_args():
@@ -21,11 +22,9 @@ def has_audio(path):
 
 
 def cut_segment(src, start, end, out):
-    subprocess.run([
-        "ffmpeg", "-y", "-v", "error", "-ss", f"{start:.3f}", "-i", str(src), "-t", f"{end-start:.3f}",
-        "-map", "0:v:0", "-map", "0:a:0?", "-vf", "scale=-2:'min(1080,ih)'",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-c:a", "aac", "-b:a", "192k", str(out),
-    ], check=True)
+    ffmpeg("-ss", f"{start:.3f}", "-i", src, "-t", f"{end-start:.3f}",
+           "-map", "0:v:0", "-map", "0:a:0?", "-vf", "scale=-2:'min(1080,ih)'",
+           "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-c:a", "aac", "-b:a", "192k", out)
 
 
 def _fit_frame(frame):
