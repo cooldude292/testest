@@ -1,4 +1,5 @@
 """Clipworks desktop app: runs the engine in-process and shows it in a native window."""
+import multiprocessing
 import os
 import socket
 import sys
@@ -18,9 +19,15 @@ def _free_port(preferred):
 
 
 def main():
+    # Libraries that spawn helper processes re-run this executable in a packaged app;
+    # without this, each helper would open another Clipworks window.
+    multiprocessing.freeze_support()
+
     if "--selftest" in sys.argv:
         from clipper import selftest
-        sys.exit(selftest.run(sys.argv[sys.argv.index("--selftest") + 1:]))
+        code = selftest.run(sys.argv[sys.argv.index("--selftest") + 1:])
+        sys.stdout.flush()
+        os._exit(code)  # don't wait on library worker threads
 
     from clipper import config
     port = _free_port(config.PORT)
