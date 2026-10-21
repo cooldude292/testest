@@ -141,7 +141,7 @@ function renderHot() {
   }
   const top = Math.max(...heat.peaks.map(p => p.intensity));
   const ranked = heat.peaks.map((p, i) => ({...p, i})).sort((a, b) => b.intensity - a.intensity);
-  box.innerHTML = `<table class="dt"><thead><tr><th style="width:22px">#</th><th style="width:80px">TC</th><th>Index</th><th class="r" style="width:40px">×</th><th style="width:82px"></th></tr></thead><tbody>
+  box.innerHTML = `<table class="dt"><thead><tr><th style="width:28px">#</th><th style="width:76px">TC</th><th>Index</th><th class="r" style="width:36px">×</th><th style="width:80px"></th></tr></thead><tbody>
     ${ranked.map((p, n) => `<tr class="click"><td class="faint mono">${n + 1}</td><td class="data">${tc(p.start)}</td>
       <td><div class="hotbar"><i style="width:${(p.intensity / top * 100).toFixed(0)}%"></i></div></td>
       <td class="r mono">${p.intensity.toFixed(1)}</td>
