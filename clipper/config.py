@@ -12,15 +12,11 @@ APP_MODE = FROZEN or os.environ.get("CLIPWORKS_APP") == "1"
 
 if APP_MODE and platform.system() == "Darwin":
     DATA = Path.home() / "Library" / "Application Support" / APP_NAME
-    EXPORT_DIR = Path.home() / "Movies" / APP_NAME      # finished clips, where people expect them
 else:
     DATA = ROOT / "workspace"
-    EXPORT_DIR = DATA / "exports"
 if os.environ.get("CLIPPER_DATA"):
     DATA = Path(os.environ["CLIPPER_DATA"]).expanduser()
-    EXPORT_DIR = DATA / "exports"
-if os.environ.get("CLIPPER_EXPORT"):
-    EXPORT_DIR = Path(os.environ["CLIPPER_EXPORT"]).expanduser()
+DOWNLOADS = Path(os.environ.get("CLIPPER_DOWNLOADS", Path.home() / "Downloads")).expanduser()  # where Shipping delivers
 JOBS_DIR = DATA / "jobs"
 UPLOADS_DIR = DATA / "uploads"
 CACHE_DIR = DATA / "cache"
@@ -49,7 +45,7 @@ FACE_MODEL_URL = (
 
 OUT_W, OUT_H = 1080, 1920
 
-for d in (JOBS_DIR, UPLOADS_DIR, CACHE_DIR, BIN_DIR, EXPORT_DIR):
+for d in (JOBS_DIR, UPLOADS_DIR, CACHE_DIR, BIN_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 # Tools shipped inside the .app (ffmpeg, ffprobe, deno) and ones fetched later (ollama)

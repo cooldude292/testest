@@ -383,7 +383,6 @@ function renderOrderDetail() {
       <div>Range</div><div class="data">${o.start != null ? `${tc(o.start)} – ${tc(o.end)}  (${tc(o.end - o.start)})` : "FULL"}</div>
       <div>Spec</div><div class="mono t2">${o.mode === "exact" ? "EXACT CUT" : `${o.max_clips} UNITS · ${o.min_len}–${o.max_len}s`} · ${o.layout === "auto" ? "AUTO" : LAYOUTS[o.layout] || o.layout}</div>
       <div>Received</div><div class="mono t2">${isoTime(j.created)}</div>
-      ${j.export_dir ? `<div>Exported</div><div class="mono t2">${esc(j.export_dir)}</div>` : ""}
     </div>
     <div class="sect">Stations</div>
     <div class="stations">${stationStates(j).map((c, i) => `<div class="stn ${c}">${STATIONS[i][1]}</div>`).join("")}</div>
@@ -421,6 +420,7 @@ const HIGHLIGHT = {yellow: "#ffd700", green: "#39ff14", red: "#ff3b30", cyan: "#
 const DEFAULT_FX = {boom: "zoom", bass_drop: "zoom", scratch: "shake", glitch: "shake", error: "shake", shutter: "flash"};
 const FX_NAMES = {none: "NO VISUAL", zoom: "ZOOM PUNCH", shake: "SHAKE", flash: "FLASH"};
 let lib = [], curSound = "boom", bay = null, selHit = -1, lastT = 0, saveTimer = null, unitsKey = "";
+let sugg = [], wave = [];   // AI suggestions (not part of the edit until accepted) and the clip's loudness envelope
 const ukey = (jid, idx) => `${jid}/${idx}`;
 const ftc = t => { t = Math.max(0, t || 0); return `${pad(Math.floor(t / 60))}:${(t % 60).toFixed(1).padStart(4, "0")}`; };
 const parseFtc = s => { const p = String(s).trim().split(":"); let t = 0; for (const x of p) { const v = parseFloat(x); if (isNaN(v)) return null; t = t * 60 + v; } return t; };
@@ -537,7 +537,8 @@ async function openUnit(jid, idx) {
   const j = jobs.find(x => x.id === jid);
   bay = {jid, idx, spec: d.spec, words: d.words, dur: d.duration, layout: d.layout, order: j ? j.order : "", ok: !!d.base_url};
   bay.events = buildEvents(bayWords());
-  selHit = -1;
+  selHit = -1; sugg = []; wave = []; renderSugg();
+  api(`/api/units/${jid}/${idx}/wave`).then(w => { if (bay && bay.jid === jid && bay.idx === idx) { wave = w; renderTrack(); } }).catch(() => {});
   $("#bay-empty").style.display = "none"; $("#bay-main").style.display = "";
   $("#pk-id").textContent = `WO-${bay.order} / ${pad(idx + 1)}`;
   if (d.base_url) { pv.src = d.base_url; pv.currentTime = bay.spec.trim[0]; } else { pv.removeAttribute("src"); }
@@ -618,6 +619,14 @@ function renderTrack() {
   if (!bay) return;
   const tr = $("#track"), W = tr.clientWidth || 1, D = bay.dur || 1, [a, b] = bay.spec.trim;
   $$(".mk", tr).forEach(x => x.remove());
+  drawWave();
+  sugg.forEach((m, i) => {
+    const el = document.createElement("div");
+    el.className = "mk ghost"; el.style.left = `${m.t / D * 100}%`; el.dataset.g = i;
+    el.title = `Suggested: ${libLabel(m.sound)} · ${m.reason || ""} (click to accept)`;
+    el.innerHTML = `${esc(libLabel(m.sound).toUpperCase())}?<small>SUGGESTED</small>`;
+    tr.appendChild(el);
+  });
   bay.spec.sfx.forEach((m, i) => {
     const el = document.createElement("div");
     el.className = "mk" + (i === selHit ? " on" : "");
@@ -640,6 +649,8 @@ const trackT = e => { const r = $("#track").getBoundingClientRect(); return Math
 $("#track").addEventListener("pointerdown", e => {
   if (!bay) return;
   $("#track").setPointerCapture(e.pointerId);
+  const ghost = e.target.closest(".mk.ghost");
+  if (ghost) { acceptSugg(+ghost.dataset.g); return; }
   const mk = e.target.closest(".mk");
   if (mk) { selHit = +mk.dataset.i; tdrag = {mode: "mk", i: selHit, moved: false}; renderTrack(); renderHit(); return; }
   if (e.target.id === "trim-l") { tdrag = {mode: "a"}; return; }
@@ -649,7 +660,7 @@ $("#track").addEventListener("pointerdown", e => {
 $("#track").addEventListener("pointermove", e => {
   if (!bay || !tdrag) return;
   const t = trackT(e), s = bay.spec;
-  if (tdrag.mode === "mk") { s.sfx[tdrag.i].t = Math.round(t * 100) / 100; tdrag.moved = true; renderTrack(); }
+  if (tdrag.mode === "mk") { s.sfx[tdrag.i].t = snapT(t); tdrag.moved = true; renderTrack(); }
   else if (tdrag.mode === "a") { s.trim[0] = Math.min(t, s.trim[1] - 1); renderTrack(); }
   else if (tdrag.mode === "b") { s.trim[1] = Math.max(t, s.trim[0] + 1); renderTrack(); }
   else pv.currentTime = t;
@@ -666,7 +677,7 @@ function sortHits() {
 }
 function addHit(t, sound) {
   if (!bay) return;
-  const m = {t: Math.round(t * 100) / 100, sound, vol: 0.8, fx: DEFAULT_FX[sound] || "none"};
+  const m = {t: snapT(t), sound, vol: 0.8, fx: DEFAULT_FX[sound] || "none"};
   bay.spec.sfx.push(m); selHit = bay.spec.sfx.indexOf(m); sortHits();
   playSfx(sound, 0.8); changed(); renderHit();
 }
@@ -722,15 +733,58 @@ $("#pk-apply-text").onclick = async () => {
 };
 $("#pk-suggest").onclick = async () => {
   if (!bay) return;
-  const b = $("#pk-suggest"); b.disabled = true; b.textContent = "PLACING…";
+  const b = $("#pk-suggest"); b.disabled = true; b.textContent = "THINKING…";
   try {
     const marks = await api(`/api/units/${bay.jid}/${bay.idx}/suggest-sfx`, {method: "POST", body: JSON.stringify({hook: bay.spec.hook, words: bayWords()})});
-    bay.spec.sfx = marks.map(m => ({t: m.t, sound: m.sound, vol: m.vol, fx: m.fx}));
-    selHit = -1; changed(); renderHit();
-    toast(`${marks.length} SOUNDS PLACED · ${marks.map(m => `${libLabel(m.sound)} @${m.t.toFixed(1)}s`).join(", ")}`);
+    // Only offer spots that aren't already covered by one of your own hits.
+    sugg = marks.filter(m => !bay.spec.sfx.some(x => Math.abs(x.t - m.t) < 0.4));
+    renderSugg(); renderTrack();
+    toast(sugg.length ? `${sugg.length} SUGGESTIONS · dashed markers on the track. Click one to accept it.` : "NO NEW SUGGESTIONS");
   } catch (e) { toast(e.message, true); }
-  finally { b.disabled = false; b.textContent = "AUTO-PLACE SOUNDS"; }
+  finally { b.disabled = false; b.textContent = "SUGGEST HITS"; }
 };
+function acceptSugg(i) {
+  const m = sugg[i]; if (!m) return;
+  sugg.splice(i, 1);
+  const hit = {t: m.t, sound: m.sound, vol: m.vol, fx: m.fx};
+  bay.spec.sfx.push(hit); sortHits(); selHit = bay.spec.sfx.indexOf(hit);
+  playSfx(hit.sound, hit.vol); renderSugg(); changed(); renderHit();
+}
+function renderSugg() {
+  $("#sugg-wrap").style.display = sugg.length ? "" : "none";
+  $("#pk-accept-all").style.display = $("#pk-dismiss").style.display = sugg.length ? "" : "none";
+  $("#sugg").innerHTML = sugg.map((m, i) => `<div class="sugg-row"><span class="mono data">${ftc(m.t)}</span>
+    <div style="min-width:0"><b>${esc(libLabel(m.sound))}</b>${m.fx !== "none" ? ` <span class="faint mono">+ ${FX_NAMES[m.fx]}</span>` : ""}<div class="why">${esc(m.reason || "")}</div></div>
+    <span><button class="btn minimal" data-hear="${i}" title="Hear it in context">▶</button><button class="btn" data-ok="${i}">✓</button><button class="btn minimal" data-no="${i}">✕</button></span></div>`).join("");
+  $$("#sugg [data-ok]").forEach(b => b.onclick = () => acceptSugg(+b.dataset.ok));
+  $$("#sugg [data-no]").forEach(b => b.onclick = () => { sugg.splice(+b.dataset.no, 1); renderSugg(); renderTrack(); });
+  $$("#sugg [data-hear]").forEach(b => b.onclick = () => { const m = sugg[+b.dataset.hear]; pv.currentTime = Math.max(bay.spec.trim[0], m.t - 1.5); pv.play();
+    setTimeout(() => playSfx(m.sound, m.vol), 1500); });
+}
+$("#pk-accept-all").onclick = () => { while (sugg.length) acceptSugg(0); };
+$("#pk-dismiss").onclick = () => { sugg = []; renderSugg(); renderTrack(); };
+function snapT(t) {
+  t = Math.max(0, Math.min(bay.dur, t));
+  if ($("#pv-snap").checked) {
+    let best = null;
+    for (const w of bayWords()) for (const x of [w.s, w.e]) if (Math.abs(x - t) < 0.15 && (best == null || Math.abs(x - t) < Math.abs(best - t))) best = x;
+    if (best != null) t = best;
+  }
+  return Math.round(t * 100) / 100;
+}
+function drawWave() {
+  const cv = $("#wave"), dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (!W) return;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  if (!wave.length) return;
+  const bw = W / wave.length;
+  wave.forEach((v, i) => {
+    const h = Math.max(1, v * (H - 6));
+    g.fillStyle = v > 0.7 ? "rgba(240,178,92,.55)" : "rgba(143,153,168,.28)";
+    g.fillRect(i * bw, (H - h) / 2, Math.max(1, bw), h);
+  });
+}
 $("#pk-clear").onclick = () => { if (!bay) return; bay.spec.sfx = []; selHit = -1; changed(); renderHit(); };
 function changed() { renderTrack(); drawOverlay(); scheduleSave(); }
 function scheduleSave() { clearTimeout(saveTimer); $("#pk-saved").textContent = "UNSAVED"; saveTimer = setTimeout(flushSave, 700); }
@@ -753,92 +807,76 @@ function refreshBayStatus() {
   const p = c.pkg || {}, m = $("#pk-meter");
   m.className = "meter " + (p.status === "done" ? "green" : "");
   $("#pk-meter i").style.width = `${((p.status === "done" ? 1 : p.progress || 0) * 100).toFixed(1)}%`;
-  $("#pk-status").textContent = p.status === "done" ? `PACKAGED ${isoTime(p.at)} · ready in F4 SHIPPING` :
+  $("#pk-status").textContent = p.status === "done" ? (c.shipped ? `SHIPPED → ${c.shipped.path.split("/").pop()}` : `PACKAGED ${isoTime(p.at)} · ready to ship`) :
     p.status === "failed" ? p.message : p.status ? p.message : "Not packaged yet";
   $("#pk-render").textContent = p.status === "done" ? "RE-RENDER PACKAGE ▸" : "RENDER PACKAGE ▸";
+  $("#pk-ship").style.display = p.status === "done" ? "" : "none";
+  $("#pk-ship").textContent = c.shipped ? "SHIPPED ✓ · SHIP AGAIN ▸" : "SHIP TO DOWNLOADS ▸";
   $("#pk-render").disabled = p.status === "running" || p.status === "queued";
 }
 
 /* ---------------- shipping ---------------- */
-const PLATS = [["tiktok", "TIKTOK"], ["youtube", "YOUTUBE SHORTS"], ["instagram", "INSTAGRAM REELS"], ["x", "X"]];
-let selShip = null, shipKey = "", shipDetailKey = "", shipTimer = null;
+let selShip = null, shipKey = "", shipDetailKey = "";
 function shipUnits() { return allUnits().filter(u => u.pkg && u.pkg.status === "done").sort((a, b) => (b.pkg.at || 0) - (a.pkg.at || 0)); }
-function platStatus(u, p) { return ((u.ship || {}).platforms || {})[p] || {}; }
+async function shipUnit(jid, idx) {
+  try {
+    const r = await api(`/api/units/${jid}/${idx}/ship`, {method: "POST"});
+    toast(`SHIPPED → ~/Downloads/${r.path.split("/").pop()}`);
+    await poll(); renderShipping(true); renderShipDetail(true);
+  } catch (e) { toast(e.message, true); }
+}
+$("#pk-ship").onclick = () => bay && shipUnit(bay.jid, bay.idx);
+$("#sh-all").onclick = async () => {
+  try {
+    const r = await api("/api/ship-all", {method: "POST"});
+    toast(r.shipped.length ? `${r.shipped.length} SHIPPED TO DOWNLOADS` : "NOTHING NEW TO SHIP");
+    await poll(); renderShipping(true); renderShipDetail(true);
+  } catch (e) { toast(e.message, true); }
+};
 function renderShipping(force) {
-  const units = shipUnits();
-  const pending = units.filter(u => !PLATS.some(([p]) => platStatus(u, p).status === "posted")).length;
-  $("#nav-shipping").textContent = units.length ? (pending || "✓") : "";
+  const units = shipUnits(), ready = units.filter(u => !u.shipped).length;
+  $("#nav-shipping").textContent = units.length ? (ready || "✓") : "";
+  $("#sh-all").disabled = !ready;
   if (!selShip && units.length) selShip = ukey(units[0].job.id, units[0].idx);
-  const key = JSON.stringify(units.map(u => [ukey(u.job.id, u.idx), u.ship, u.pkg.at])) + selShip;
-  if (key !== shipKey || force) {
-    shipKey = key;
-    $("#sh-list").innerHTML = !units.length ? `<div class="empty"><b>NOTHING TO SHIP</b>Render a package in F3 Packaging and it lands here.</div>` :
-      `<table class="dt"><thead><tr><th style="width:38px"></th><th>Unit</th><th style="width:74px">Order</th><th style="width:60px">Packed</th>
-        ${PLATS.map(([p]) => `<th style="width:76px">${{tiktok: "TT", youtube: "YT", instagram: "IG", x: "X"}[p]}</th>`).join("")}</tr></thead><tbody>
-      ${units.map(u => `<tr class="click tall ${ukey(u.job.id, u.idx) === selShip ? "on" : ""}" data-k="${ukey(u.job.id, u.idx)}"><td>${thumbHtml(u)}</td>
-        <td><div class="hook" style="overflow:hidden;text-overflow:ellipsis">${esc((u.package && u.package.hook) || u.hook)}</div><div class="faint" style="font-size:11px">${esc(u.title)}</div></td>
-        <td class="data">WO-${u.job.order}</td><td class="mono faint">${ago(u.pkg.at || 0)}</td>
-        ${PLATS.map(([p]) => { const st = platStatus(u, p).status;
-          return `<td>${st === "posted" ? `<span class="tag green">POSTED</span>` : st === "skipped" ? `<span class="tag">SKIP</span>` : `<span class="faint mono">—</span>`}</td>`; }).join("")}</tr>`).join("")}
-      </tbody></table>`;
-    $$("#sh-list tr.click").forEach(tr => tr.onclick = () => { selShip = tr.dataset.k; renderShipping(true); renderShipDetail(true); });
-  }
+  const key = JSON.stringify(units.map(u => [ukey(u.job.id, u.idx), u.shipped, u.pkg.at])) + selShip;
+  if (key === shipKey && !force) return renderShipDetail();
+  shipKey = key;
+  $("#sh-list").innerHTML = !units.length ? `<div class="empty"><b>NOTHING TO SHIP</b>Render a package in F3 Packaging and it lands here.</div>` :
+    `<table class="dt"><thead><tr><th style="width:38px"></th><th>Unit</th><th style="width:74px">Order</th><th style="width:64px">Packed</th>
+      <th style="width:200px">Status</th><th style="width:86px"></th></tr></thead><tbody>
+    ${units.map(u => `<tr class="click tall ${ukey(u.job.id, u.idx) === selShip ? "on" : ""}" data-k="${ukey(u.job.id, u.idx)}"><td>${thumbHtml(u)}</td>
+      <td><div class="hook" style="overflow:hidden;text-overflow:ellipsis">${esc((u.package && u.package.hook) || u.hook)}</div><div class="faint" style="font-size:11px">${esc(u.title)}</div></td>
+      <td class="data">WO-${u.job.order}</td><td class="mono faint">${ago(u.pkg.at || 0)}</td>
+      <td>${u.shipped ? `<span class="tag green">SHIPPED</span> <span class="mono faint" style="font-size:10.5px">${ago(u.shipped.at)} ago</span>` : `<span class="tag amber">READY</span>`}</td>
+      <td class="r acts-cell"><button class="btn ${u.shipped ? "" : "amber"}" data-ship="${u.job.id}|${u.idx}">${u.shipped ? "AGAIN" : "SHIP"}</button></td></tr>`).join("")}
+    </tbody></table>`;
+  $$("#sh-list tr.click").forEach(tr => tr.onclick = () => { selShip = tr.dataset.k; renderShipping(true); renderShipDetail(true); });
+  $$("#sh-list [data-ship]").forEach(b => b.onclick = e => { e.stopPropagation(); const [j, i] = b.dataset.ship.split("|"); shipUnit(j, +i); });
   renderShipDetail();
 }
 function renderShipDetail(force) {
   const u = shipUnits().find(x => ukey(x.job.id, x.idx) === selShip), box = $("#sh-detail");
-  if (!u) { if (shipDetailKey) { box.innerHTML = `<div class="empty"><b>NOTHING SELECTED</b>Packaged units appear here, ready to post.</div>`; shipDetailKey = ""; $("#sh-id").textContent = ""; } return; }
-  const key = JSON.stringify([selShip, u.ship, u.pkg.at]);
-  if (!force && (key === shipDetailKey || box.contains(document.activeElement))) return;
+  if (!u) { if (shipDetailKey) { box.innerHTML = `<div class="empty"><b>NOTHING SELECTED</b>Packaged units appear here.</div>`; shipDetailKey = ""; $("#sh-id").textContent = ""; } return; }
+  const key = JSON.stringify([selShip, u.shipped, u.pkg.at]);
+  if (!force && key === shipDetailKey) return;
   shipDetailKey = key;
-  const kit = (u.ship || {}).kit || {}, has = Object.values(kit).some(Boolean);
-  const url = `/files/${encodeURIComponent(u.job.id)}/${encodeURIComponent(u.pkg.file)}`;
+  const url = `/files/${encodeURIComponent(u.job.id)}/${encodeURIComponent(u.pkg.file)}`, spec = u.package || {};
   $("#sh-id").textContent = `WO-${u.job.order} / ${pad(u.idx + 1)}`;
-  const field = (name, rows) => rows ? `<textarea class="input" data-kit="${name}" rows="${rows}">${esc(kit[name] || "")}</textarea>` : `<input class="input" data-kit="${name}" value="${esc(kit[name] || "")}">`;
   box.innerHTML = `<div class="clipview"><video src="${url}" controls playsinline preload="metadata"></video></div>
-    <div class="acts"><button class="btn primary" id="sh-gen">${has ? "REWRITE COPY" : "WRITE POSTING COPY"}</button><button class="btn" id="sh-reveal">REVEAL FILE</button>
-      <span class="mono faint" style="align-self:center;font-size:10.5px">${esc((u.pkg.export || "").split("/").pop())}</span></div>
-    ${PLATS.map(([p, name]) => { const st = platStatus(u, p);
-      return `<div class="plat" data-p="${p}"><div class="plat-h"><b>${name}</b>${st.status === "posted" ? `<span class="tag green">POSTED ${st.at ? isoTime(st.at).slice(5, 16) : ""}</span>` : `<span class="tag">NOT POSTED</span>`}</div>
-        ${p === "youtube" ? field("youtube_title") + `<div style="height:4px"></div>` + field("youtube_description", 3) : field(p, 3)}
-        <div class="row"><button class="btn amber" data-act="prep">PREP UPLOAD</button><button class="btn" data-act="copy">COPY</button><button class="btn minimal" data-act="open">OPEN UPLOADER</button></div>
-        <div class="row"><input class="input" data-url placeholder="Post URL (optional)" value="${esc(st.url || "")}" style="flex:1">
-          ${st.status === "posted" ? `<button class="btn minimal" data-act="unpost">UNDO</button>` : `<button class="btn" data-act="posted">MARK POSTED</button>`}</div></div>`; }).join("")}`;
-  const base = `/api/units/${u.job.id}/${u.idx}`;
-  $("#sh-gen").onclick = async () => { const b = $("#sh-gen"); b.disabled = true; b.textContent = "WRITING…";
-    try { await api(`${base}/kit`, {method: "POST"}); await poll(); renderShipDetail(true); toast("POSTING COPY WRITTEN"); } catch (e) { toast(e.message, true); }
-    finally { b.disabled = false; } };
-  $("#sh-reveal").onclick = () => api(`${base}/reveal`, {method: "POST"});
-  $$("[data-kit]", box).forEach(el => el.oninput = () => { clearTimeout(shipTimer);
-    shipTimer = setTimeout(() => api(`${base}/ship`, {method: "PUT", body: JSON.stringify({kit: {[el.dataset.kit]: el.value}})}), 600); });
-  $$(".plat", box).forEach(pl => {
-    const p = pl.dataset.p;
-    const text = () => p === "youtube" ? `${$("[data-kit=youtube_title]", pl).value}\n\n${$("[data-kit=youtube_description]", pl).value}` : $(`[data-kit=${p}]`, pl).value;
-    $$("[data-act]", pl).forEach(b => b.onclick = async () => {
-      const a = b.dataset.act;
-      try {
-        if (a === "copy") { await copyText(p === "youtube" ? $("[data-kit=youtube_title]", pl).value : text()); toast(p === "youtube" ? "TITLE COPIED · description is below it" : "CAPTION COPIED"); }
-        if (a === "open") await api(`/api/open-upload/${p}`, {method: "POST"});
-        if (a === "prep") {  // everything for one upload in one click: caption on the clipboard, file selected in Finder, uploader open
-          await copyText(p === "youtube" ? $("[data-kit=youtube_title]", pl).value : text());
-          await api(`${base}/reveal`, {method: "POST"});
-          await api(`/api/open-upload/${p}`, {method: "POST"});
-          toast(`${p.toUpperCase()} READY · caption copied, file selected in Finder, uploader opened. Drag the file in and paste.`);
-        }
-        if (a === "posted" || a === "unpost") {
-          await api(`${base}/ship`, {method: "PUT", body: JSON.stringify({platforms: {[p]: {status: a === "posted" ? "posted" : "ready", url: $("[data-url]", pl).value}}})});
-          await poll(); renderShipDetail(true);
-        }
-      } catch (e) { toast(e.message, true); }
-    });
-  });
+    <div class="kv">
+      <div>Hook</div><div class="hook">${esc(spec.hook || u.hook)}</div>
+      <div>Length</div><div class="mono t2">${spec.trim ? (spec.trim[1] - spec.trim[0]).toFixed(1) : Math.round(u.end - u.start)} s · 1080×1920</div>
+      <div>Sounds</div><div class="mono t2">${(spec.sfx || []).length ? spec.sfx.map(m => libLabel(m.sound)).join(", ") : "none"}</div>
+      <div>Packaged</div><div class="mono t2">${isoTime(u.pkg.at)}</div>
+      <div>Status</div><div>${u.shipped ? `<span class="tag green">SHIPPED</span> <span class="mono t2" style="font-size:11px">${esc(u.shipped.path.replace(/^\/Users\/[^/]+/, "~"))}</span>` : `<span class="tag amber">READY</span>`}</div>
+    </div>
+    <div class="acts"><button class="btn amber" id="sh-one">${u.shipped ? "SHIP AGAIN" : "SHIP TO DOWNLOADS"}</button>
+      <button class="btn" id="sh-reveal">${u.shipped ? "SHOW IN FINDER" : "SHOW PACKAGE FILE"}</button>
+      <button class="btn minimal" id="sh-edit">BACK TO PACKAGING</button></div>`;
+  $("#sh-one").onclick = () => shipUnit(u.job.id, u.idx);
+  $("#sh-reveal").onclick = () => api(`/api/units/${u.job.id}/${u.idx}/reveal`, {method: "POST"});
+  $("#sh-edit").onclick = () => { go("packaging"); openUnit(u.job.id, u.idx); };
 }
-async function copyText(text) {
-  try { await api("/api/clipboard", {method: "POST", body: JSON.stringify({text})}); }
-  catch { await navigator.clipboard.writeText(text); }
-}
-(async () => { const s = await api("/api/settings").catch(() => ({})); $("#sh-campaign").value = s.campaign || ""; })();
-$("#sh-campaign-save").onclick = async () => { await api("/api/settings", {method: "PUT", body: JSON.stringify({campaign: $("#sh-campaign").value})}); toast("CAMPAIGN TAGS SAVED · added to every caption"); };
 loadLib();
 
 /* ---------------- system + status bar ---------------- */
@@ -863,14 +901,15 @@ function renderSystem(st) {
     }).join("") + `<div style="margin-top:6px">${st.ready ? `<span class="ok">READY.</span> Paste a source URL into the command line.` :
       `<span class="wait">PROVISIONING.</span> Sources can be loaded now; production starts when models are online.`}</div>`;
     $("#config").innerHTML = [["Product", `${a.name} ${a.version}`], ["Deployment", "Local · single station"], ["Language model", a.llm],
-      ["Speech model", a.whisper], ["Compute", a.apple_silicon ? "Apple Silicon · Metal" : "CPU"], ["Exports", a.exports], ["Data", a.data]]
-      .map(([k, v]) => `<div>${k}</div><div class="${["Exports", "Data", "Language model", "Speech model"].includes(k) ? "mono t2" : ""}">${esc(v)}</div>`).join("");
+      ["Speech model", a.whisper], ["Compute", a.apple_silicon ? "Apple Silicon · Metal" : "CPU"], ["Ships to", a.downloads], ["Data", a.data]]
+      .map(([k, v]) => `<div>${k}</div><div class="${["Ships to", "Data", "Language model", "Speech model"].includes(k) ? "mono t2" : ""}">${esc(v)}</div>`).join("");
   }
   $("#nav-system").textContent = err ? "!" : pending.length ? "…" : "";
   $("#st-led").className = "led " + (err ? "bad" : pending.length ? "warn blink" : "");
   $("#st-engine").textContent = err ? "ENGINE FAULT" : pending.length ? "PROVISIONING" : "ENGINE ONLINE";
   $("#st-llm").textContent = `${a.llm} ${st.ready ? "READY" : "…"}`;
-  $("#st-exports").textContent = `EXPORTS ${a.exports.replace(/^\/Users\/[^/]+/, "~")}`;
+  $("#st-exports").textContent = `SHIPS TO ${a.downloads.replace(/^\/Users\/[^/]+/, "~")}`;
+  $("#sh-dest").textContent = `DESTINATION ${a.downloads.replace(/^\/Users\/[^/]+/, "~")}`;
   $("#st-ver").textContent = `v${a.version}`;
   const active = jobs.find(j => j.status === "running");
   const queued = jobs.filter(j => j.status === "queued").length;
@@ -879,7 +918,7 @@ function renderSystem(st) {
     !st.ready ? (() => { const d = steps.find(s => s.status === "running"); return d ? `PROVISIONING ${esc(d.label.toUpperCase())} · ${esc(d.message)}` : "PROVISIONING"; })() : "IDLE · AWAITING WORK ORDERS";
 }
 $("#retry-setup").onclick = () => api("/api/setup/retry", {method: "POST"});
-$("#btn-exports").onclick = async () => { const r = await api("/api/reveal-exports", {method: "POST"}); if (!navigator.platform.startsWith("Mac")) toast(r.path); };
+$("#btn-exports").onclick = async () => { const r = await api("/api/reveal-downloads", {method: "POST"}); if (!navigator.platform.startsWith("Mac")) toast(r.path); };
 
 /* ---------------- polling ---------------- */
 async function poll() {

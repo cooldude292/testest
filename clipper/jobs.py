@@ -24,7 +24,6 @@ class Job:
     def __init__(self, source, options, jid=None, order=0):
         self.id = jid or time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
         self.order = order
-        self.export_dir = ""
         self.source = source
         self.options = options
         self.title = ""
@@ -48,7 +47,7 @@ class Job:
         if light:  # the UI polls every second; edited word lists are fetched per unit instead
             clips = [{**c, "package": {**c["package"], "words": None}} if c.get("package") else c for c in clips]
         return {
-            "id": self.id, "order": self.order, "export_dir": self.export_dir,
+            "id": self.id, "order": self.order,
             "source": self.source, "options": self.options, "title": self.title,
             "status": self.status, "stage": self.stage, "progress": self.progress,
             "message": self.message, "log": self.log_lines[-log_tail:] if log_tail else self.log_lines,
@@ -109,7 +108,6 @@ class Manager:
             except Exception:
                 continue
             j = Job(d["source"], d.get("options", {}), d["id"], d.get("order", 0))
-            j.export_dir = d.get("export_dir", "")
             j.title, j.status, j.stage = d.get("title", ""), d.get("status"), d.get("stage", "")
             j.progress, j.message = d.get("progress"), d.get("message", "")
             j.log_lines, j.clips, j.error = d.get("log", []), d.get("clips", []), d.get("error", "")
@@ -215,55 +213,30 @@ class Manager:
                     st["progress"], st["message"] = f, f"Rendering {int(f * 100)}%"
 
                 packaging.compose(base, self.unit_words(j, c), c["package"], c.get("layout", "track"), out, prog)
-                dest = config.EXPORT_DIR / "Ready to Ship"
-                dest.mkdir(parents=True, exist_ok=True)
-                name = _safe(f"WO-{j.order}-{idx + 1:02d} {c['package']['hook'] or c.get('title') or 'clip'}", 90) + ".mp4"
-                shutil.copy2(out, dest / name)
-                st.update(status="done", progress=1.0, message="Packaged", file=out.name, export=str(dest / name),
-                          at=time.time())
-                self._write_ship_notes(j, c)
+                st.update(status="done", progress=1.0, message="Packaged", file=out.name, at=time.time())
+                c.pop("shipped", None)  # a new render hasn't been shipped yet
             except Exception as ex:
                 st.update(status="failed", message=f"{type(ex).__name__}: {ex}")
             j.save(force=True)
 
-    def make_kit(self, jid, idx, campaign):
+    def ship(self, jid, idx):
+        """Shipping = put the finished file in Downloads with a clean name."""
         j, c = self.unit(jid, idx)
-        meta = self.unit_meta(j)
-        src = j.source.lower()
-        platform = "Twitch" if "twitch.tv" in src else "YouTube" if "youtu" in src else "Kick" if "kick.com" in src else ""
-        hook = (c.get("package") or {}).get("hook") or c.get("hook") or ""
-        kit = packaging.ship_kit(hook, c.get("title", ""), c.get("text", ""), meta.get("channel", ""), platform, campaign)
-        c.setdefault("ship", {"kit": {}, "platforms": {}})["kit"] = kit
-        self._write_ship_notes(j, c)
+        pkg = c.get("pkg") or {}
+        src = j.dir / pkg["file"] if pkg.get("status") == "done" and pkg.get("file") else None
+        if not src or not src.exists():
+            raise ValueError("Render the package first")
+        config.DOWNLOADS.mkdir(parents=True, exist_ok=True)
+        hook = (c.get("package") or {}).get("hook") or c.get("hook") or c.get("title") or "clip"
+        stem = _safe(f"{hook} (WO-{j.order}-{idx + 1:02d})", 90)
+        dest, n = config.DOWNLOADS / f"{stem}.mp4", 2
+        while dest.exists():
+            dest, n = config.DOWNLOADS / f"{stem} {n}.mp4", n + 1
+        shutil.copy2(src, dest)
+        c["shipped"] = {"path": str(dest), "at": time.time()}
         j.save(force=True)
-        return kit
+        return c["shipped"]
 
-    def update_ship(self, jid, idx, data):
-        j, c = self.unit(jid, idx)
-        ship = c.setdefault("ship", {"kit": {}, "platforms": {}})
-        for k, v in (data.get("kit") or {}).items():
-            if k in packaging.SHIP_SCHEMA["properties"]:
-                ship["kit"][k] = str(v)[:5000]
-        for p, v in (data.get("platforms") or {}).items():
-            if p in ("tiktok", "youtube", "instagram", "x"):
-                cur = ship["platforms"].setdefault(p, {})
-                if "status" in v and v["status"] in ("ready", "posted", "skipped"):
-                    cur["status"] = v["status"]
-                    cur["at"] = time.time()
-                if "url" in v:
-                    cur["url"] = str(v["url"])[:500]
-        self._write_ship_notes(j, c)
-        j.save(force=True)
-        return ship
-
-    def _write_ship_notes(self, j, c):
-        """A text file next to the packaged video, so the copy is right there when uploading from Finder."""
-        exp = (c.get("pkg") or {}).get("export")
-        kit = (c.get("ship") or {}).get("kit")
-        if not exp or not kit:
-            return
-        lines = [f"{k.upper()}\n{v}\n" for k, v in kit.items() if v]
-        Path(exp).with_suffix(".txt").write_text("\n".join(lines))
 
     def _worker(self):
         while True:
@@ -400,7 +373,6 @@ def run_pipeline(job, ctx):
         ctx.log(f"Rendered {name} ({clip['end']-clip['start']:.0f}s, score {clip['score']}, {clip['layout']})")
         job.save(force=True)
     audio.unlink(missing_ok=True)
-    export(job)
 
 
 def _tc(t):
@@ -411,12 +383,3 @@ def _tc(t):
 def _safe(name, n=60):
     name = re.sub(r'[\\/:*?"<>|\n\r]+', " ", name).strip()
     return re.sub(r"\s+", " ", name)[:n].strip(" .") or "clip"
-
-
-def export(job):
-    """Copy finished clips somewhere people actually look (~/Movies/Clipworks in the app)."""
-    dest = config.EXPORT_DIR / _safe(f"WO-{job.order} {job.title}", 80)
-    dest.mkdir(parents=True, exist_ok=True)
-    for n, c in enumerate(job.clips, 1):
-        shutil.copy2(job.dir / c["file"], dest / f"{n:02d} {_safe(c.get('hook') or c.get('title') or 'clip')}.mp4")
-    job.export_dir = str(dest)

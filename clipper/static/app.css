@@ -231,10 +231,8 @@ canvas.tl { width: 100%; flex: 1; display: block; background: #0d1014; border: 1
 .sfx-row .hint { color: var(--faint); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .range { width: 100%; accent-color: var(--amber); }
 
-/* ---------- shipping ---------- */
-.plat { border-top: 1px solid var(--line); padding: 8px 10px 10px; }
-.plat-h { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.plat-h b { font-family: var(--mono); letter-spacing: .1em; font-size: 11px; }
-.plat textarea, .plat input.input { width: 100%; }
-.plat textarea { height: auto; padding: 6px; line-height: 1.45; resize: vertical; font-size: 12px; }
-.plat .row { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; align-items: center; }
+.track-wave { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; }
+.mk.ghost { border-left: 2px dashed var(--text-2); color: var(--text-2); background: rgba(255, 255, 255, .04); opacity: .85; }
+.mk.ghost:hover { opacity: 1; color: #fff; }
+.sugg-row { display: grid; grid-template-columns: 54px 1fr auto; gap: 6px; align-items: center; padding: 4px 10px; border-bottom: 1px solid var(--line-2); }
+.sugg-row .why { color: var(--faint); font-size: 10.5px; }

@@ -29,7 +29,7 @@
     <a href="#shipping" data-page="shipping"><span class="fk">F4</span>Shipping <span class="n" id="nav-shipping"></span></a>
     <a href="#system" data-page="system" class="sys-tab"><span class="fk">F5</span>System <span class="n" id="nav-system"></span></a>
     <div class="right"><button class="btn minimal" id="btn-file">Open file…</button><input type="file" id="file-input" accept="video/*" hidden>
-      <button class="btn minimal" id="btn-exports">Exports</button></div>
+      <button class="btn minimal" id="btn-exports">Downloads</button></div>
   </nav>
 
   <div class="stage">
@@ -159,18 +159,22 @@
               <div class="transport">
                 <button class="btn" id="pv-play">PLAY</button>
                 <span class="tc" id="pv-tc">00:00.0 <small>/ 00:00.0</small></span>
+                <label class="mono t2" style="font-size:10.5px;display:flex;gap:5px;align-items:center;margin-left:8px"><input type="checkbox" id="pv-snap" checked>SNAP TO WORDS</label>
                 <span style="flex:1"></span>
                 <span class="muted mono" style="font-size:10.5px">SOUND</span>
                 <select class="input" id="pv-sound" style="width:140px"></select>
                 <button class="btn amber" id="pv-add">DROP AT PLAYHEAD <span class="key">B</span></button>
               </div>
               <div class="track-wrap">
-                <div class="track" id="track"><div class="track-trim l" id="trim-l"></div><div class="track-trim r" id="trim-r"></div><div class="track-ph" id="track-ph"></div></div>
+                <div class="track" id="track"><canvas class="track-wave" id="wave"></canvas><div class="track-trim l" id="trim-l"></div><div class="track-trim r" id="trim-r"></div><div class="track-ph" id="track-ph"></div></div>
                 <div class="track-words" id="track-words"></div>
               </div>
               <div class="acts" style="border-top:1px solid var(--line)">
-                <button class="btn primary" id="pk-suggest">AUTO-PLACE SOUNDS</button>
-                <button class="btn" id="pk-clear">CLEAR SOUNDS</button>
+                <button class="btn" id="pk-suggest" title="The AI marks where hits could go. Nothing is added until you accept it.">SUGGEST HITS</button>
+                <button class="btn amber" id="pk-accept-all" style="display:none">ACCEPT ALL</button>
+                <button class="btn minimal" id="pk-dismiss" style="display:none">DISMISS</button>
+                <span class="sep"></span>
+                <button class="btn minimal" id="pk-clear">CLEAR MY SOUNDS</button>
                 <span style="flex:1"></span>
                 <span class="mono faint" id="pk-saved"></span>
               </div>
@@ -181,6 +185,7 @@
         <div class="panel">
           <div class="ph"><span class="id">PK-03</span>Properties</div>
           <div class="pb" id="props">
+            <div id="sugg-wrap" style="display:none"><div class="sect">Suggestions</div><div id="sugg"></div></div>
             <div class="sect">Selected hit</div>
             <div id="hit-props"><div class="empty" style="padding:12px">Click a marker on the track.</div></div>
             <div class="sect">Sound library<span style="flex:1"></span><button class="btn minimal" id="sfx-import">IMPORT…</button><button class="btn minimal" id="sfx-folder">FOLDER</button><input type="file" id="sfx-file" accept="audio/*" hidden multiple></div>
@@ -198,6 +203,7 @@
           </div>
           <div class="pad" style="border-top:1px solid var(--line)">
             <button class="btn amber wide" id="pk-render">RENDER PACKAGE ▸</button>
+            <button class="btn primary wide" id="pk-ship" style="display:none;margin-top:6px">SHIP TO DOWNLOADS ▸</button>
             <div class="meter" id="pk-meter" style="margin-top:6px"><i></i></div>
             <div class="mono t2" id="pk-status" style="font-size:10.5px;margin-top:4px">—</div>
           </div>
@@ -209,13 +215,13 @@
     <section class="page" id="page-shipping">
       <div class="grid split">
         <div class="panel">
-          <div class="ph"><span class="id">SH-01</span>Shipping manifest<span class="right"><span class="mono faint">CAMPAIGN TAGS</span>
-            <input class="input" id="sh-campaign" placeholder="e.g. @brand #ad" style="width:220px"><button class="btn" id="sh-campaign-save">SAVE</button></span></div>
+          <div class="ph"><span class="id">SH-01</span>Shipping manifest<span class="right"><span class="mono faint" id="sh-dest"></span>
+            <button class="btn amber" id="sh-all">SHIP ALL READY</button></span></div>
           <div class="pb" id="sh-list"></div>
         </div>
         <div class="panel">
           <div class="ph"><span class="id">SH-02</span>Shipment<span class="right mono data" id="sh-id"></span></div>
-          <div class="pb" id="sh-detail"><div class="empty"><b>NOTHING SELECTED</b>Packaged units appear here, ready to post.</div></div>
+          <div class="pb" id="sh-detail"><div class="empty"><b>NOTHING SELECTED</b>Packaged units appear here.</div></div>
         </div>
       </div>
     </section>

@@ -52,7 +52,7 @@ def get_state():
     return {
         "setup": setup_tasks.state, "ready": setup_tasks.ready(), "jobs": manager.list(),
         "app": {"name": config.APP_NAME, "version": config.VERSION, "llm": config.LLM_MODEL,
-                "whisper": config.WHISPER_MODEL, "data": str(config.DATA), "exports": str(config.EXPORT_DIR),
+                "whisper": config.WHISPER_MODEL, "data": str(config.DATA), "downloads": str(config.DOWNLOADS),
                 "apple_silicon": config.IS_APPLE_SILICON},
     }
 
@@ -172,15 +172,15 @@ def reveal(jid: str):
     j = manager.jobs.get(jid)
     if not j:
         raise HTTPException(404)
-    path = Path(j.export_dir) if j.export_dir and Path(j.export_dir).exists() else j.dir
+    path = j.dir
     _reveal(path)
     return {"path": str(path)}
 
 
-@app.post("/api/reveal-exports")
-def reveal_exports():
-    _reveal(config.EXPORT_DIR)
-    return {"path": str(config.EXPORT_DIR)}
+@app.post("/api/reveal-downloads")
+def reveal_downloads():
+    _reveal(config.DOWNLOADS)
+    return {"path": str(config.DOWNLOADS)}
 
 
 # ---------------- packaging ----------------
@@ -259,59 +259,41 @@ def unit_render(jid: str, idx: int):
     return {"ok": True}
 
 
+@app.get("/api/units/{jid}/{idx}/wave")
+def unit_wave(jid: str, idx: int):
+    j, c = _unit(jid, idx)
+    base = j.dir / c["file"].replace(".mp4", "_base.mp4")
+    return packaging.waveform(base) if base.exists() else []
+
+
 # ---------------- shipping ----------------
 
-UPLOAD_PAGES = {"tiktok": "https://www.tiktok.com/tiktokstudio/upload", "youtube": "https://www.youtube.com/upload",
-                "instagram": "https://www.instagram.com/", "x": "https://x.com/compose/post"}
-
-
-@app.get("/api/settings")
-def get_settings():
-    return packaging.load_settings()
-
-
-@app.put("/api/settings")
-def put_settings(body: dict):
-    packaging.save_settings(body)
-    return packaging.load_settings()
-
-
-@app.post("/api/units/{jid}/{idx}/kit")
-def unit_kit(jid: str, idx: int):
+@app.post("/api/units/{jid}/{idx}/ship")
+def unit_ship(jid: str, idx: int):
     _unit(jid, idx)
-    return manager.make_kit(jid, idx, packaging.load_settings().get("campaign", ""))
+    try:
+        return manager.ship(jid, idx)
+    except ValueError as ex:
+        raise HTTPException(400, str(ex))
 
 
-@app.put("/api/units/{jid}/{idx}/ship")
-def unit_ship(jid: str, idx: int, body: dict):
-    _unit(jid, idx)
-    return manager.update_ship(jid, idx, body)
+@app.post("/api/ship-all")
+def ship_all():
+    """Ship every packaged unit that hasn't been shipped since its last render."""
+    done = []
+    for j in list(manager.jobs.values()):
+        for i, c in enumerate(j.clips):
+            if (c.get("pkg") or {}).get("status") == "done" and not c.get("shipped"):
+                done.append(manager.ship(j.id, i)["path"])
+    return {"shipped": done}
 
 
 @app.post("/api/units/{jid}/{idx}/reveal")
 def unit_reveal(jid: str, idx: int):
     j, c = _unit(jid, idx)
-    exp = (c.get("pkg") or {}).get("export")
-    path = Path(exp) if exp and Path(exp).exists() else j.dir / c["file"]
+    shipped = (c.get("shipped") or {}).get("path")
+    pkg = (c.get("pkg") or {}).get("file")
+    path = Path(shipped) if shipped and Path(shipped).exists() else (j.dir / pkg if pkg else j.dir / c["file"])
     if platform.system() == "Darwin":
-        subprocess.Popen(["open", "-R", str(path)])  # select the file in Finder, ready to drag
+        subprocess.Popen(["open", "-R", str(path)])  # select the file in Finder
     return {"path": str(path)}
-
-
-@app.post("/api/open-upload/{platform_id}")
-def open_upload(platform_id: str):
-    url = UPLOAD_PAGES.get(platform_id)
-    if not url:
-        raise HTTPException(404)
-    if platform.system() == "Darwin":
-        subprocess.Popen(["open", url])  # the user's own browser, where they're logged in
-    return {"url": url}
-
-
-@app.post("/api/clipboard")
-def clipboard(body: dict):
-    text = str(body.get("text", ""))
-    if platform.system() != "Darwin" or not shutil.which("pbcopy"):
-        raise HTTPException(501, "Clipboard helper only on macOS")
-    subprocess.run(["pbcopy"], input=text.encode(), check=True)
-    return {"ok": True}

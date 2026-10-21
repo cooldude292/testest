@@ -178,8 +178,8 @@ def compose(base, words, spec, layout, out, progress=None):
 
 # ---------------------------------------------------------------- AI suggestions
 
-SFX_PROMPT = """You are editing a {dur:.0f}-second vertical clip for TikTok/Shorts. Place sound effects the way top
-clip editors do: few but well-timed. Hits land ON the moment (the punchline word, the reaction, the reveal),
+SFX_PROMPT = """You are helping an editor who places sound effects by hand on a a {dur:.0f}-second vertical clip for TikTok/Shorts.
+Suggest where sound effects would land the way top clip editors do: few but well-timed. Hits land ON the moment (the punchline word, the reaction, the reveal),
 never randomly. 2 to 5 sounds total. Often: a whoosh or swish at 0.0 to open, a boom on the funniest or most
 shocking beat, a riser about 2 seconds before a payoff.
 
@@ -227,67 +227,21 @@ def suggest_sfx(words, hook, duration):
     return dedup[:6]
 
 
-# ---------------------------------------------------------------- shipping kit
+# ---------------------------------------------------------------- waveform
 
-SHIP_PROMPT = """Write the posting copy for this short vertical clip.
-
-Clip hook: {hook}
-What happens: {title}
-Transcript: {text}
-Original creator: {channel} (on {platform})
-Required tags/mentions for this campaign (must appear in every caption, verbatim): {campaign}
-
-Rules:
-- Credit the original creator in every caption (e.g. "@{handle}" or their name).
-- Sound like a real clip page, not a brand. Lowercase is fine. No cringe hype words.
-- tiktok: one short line + 3-5 relevant hashtags, under 150 characters before hashtags.
-- youtube_title: under 70 characters, curiosity-driven, end with #shorts.
-- youtube_description: 1-2 lines + credit + 3 hashtags.
-- instagram: 1-2 lines + credit + 5-8 hashtags.
-- x: one punchy line under 200 characters + credit."""
-
-SHIP_SCHEMA = {"type": "object", "properties": {k: {"type": "string"} for k in
-               ("tiktok", "youtube_title", "youtube_description", "instagram", "x")},
-               "required": ["tiktok", "youtube_title", "youtube_description", "instagram", "x"]}
-
-
-def ship_kit(hook, title, text, channel, platform, campaign):
-    handle = "".join(ch for ch in (channel or "") if ch.isalnum() or ch == "_") or "creator"
-    try:
-        kit = ask_llm(SHIP_PROMPT.format(hook=hook, title=title, text=text[:2500], channel=channel or "unknown",
-                                         handle=handle, platform=platform or "stream", campaign=campaign or "(none)"),
-                      SHIP_SCHEMA)
-    except Exception:
-        kit = {}
-    credit = f"@{handle}" if channel else ""
-    base = hook or title or "you have to see this"
-    kit = {k: str(kit.get(k) or "").strip() for k in SHIP_SCHEMA["properties"]}
-    j = lambda *parts: " ".join(x for x in parts if x)
-    kit["tiktok"] = kit["tiktok"] or j(base, credit, "#fyp #clips")
-    kit["youtube_title"] = kit["youtube_title"] or f"{base} #shorts"
-    kit["youtube_description"] = kit["youtube_description"] or f"{base}\nCredit: {credit}\n#shorts #clips"
-    kit["instagram"] = kit["instagram"] or f"{base}\n{credit}\n#reels #clips #viral"
-    kit["x"] = kit["x"] or j(base, credit)
-    # Credit and #shorts are non-negotiable, so they're enforced here rather than left to the model.
-    if credit:
-        for k in ("tiktok", "youtube_description", "instagram", "x"):
-            if handle.lower() not in kit[k].lower():
-                kit[k] = f"{kit[k]}\n🎥 {credit}" if k in ("youtube_description", "instagram") else f"{kit[k]} 🎥 {credit}"
-    if "#shorts" not in kit["youtube_title"].lower():
-        kit["youtube_title"] = f"{kit['youtube_title'][:88]} #shorts"
-    if campaign:  # don't trust the model with requirements that decide whether you get paid
-        for k in ("tiktok", "youtube_description", "instagram", "x"):
-            if campaign not in kit[k]:
-                kit[k] = f"{kit[k]} {campaign}".strip()
-    return kit
-
-
-def load_settings():
-    try:
-        return json.loads((config.DATA / "settings.json").read_text())
-    except Exception:
-        return {"campaign": ""}
-
-
-def save_settings(d):
-    (config.DATA / "settings.json").write_text(json.dumps({"campaign": str(d.get("campaign", ""))[:300]}))
+def waveform(base, bins=1200):
+    """Loudness envelope of the clip (0..1 per bin) so you can see the yells and laughs on the track."""
+    cache = base.with_suffix(".wave.json")
+    if cache.exists() and cache.stat().st_mtime >= base.stat().st_mtime:
+        return json.loads(cache.read_text())
+    pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", str(base), "-vn", "-ac", "1", "-ar", "8000", "-f", "s16le", "-"],
+                         capture_output=True).stdout
+    a = np.frombuffer(pcm, np.int16).astype(np.float32) / 32768.0
+    if a.size == 0:
+        return []
+    edges = np.linspace(0, a.size, bins + 1).astype(int)
+    rms = np.array([np.sqrt(np.mean(a[x:y] ** 2)) if y > x else 0.0 for x, y in zip(edges[:-1], edges[1:])])
+    peak = float(np.percentile(rms, 99)) or 1.0
+    out = [round(float(min(1.0, v / peak)), 3) for v in rms]
+    cache.write_text(json.dumps(out))
+    return out

@@ -180,12 +180,10 @@ def run(args):
                                                     transcript=transcript))
         from clipper import packaging
         marks = packaging.suggest_sfx(words, "Nobody expected that", 6.0)
-        kit = packaging.ship_kit("Nobody expected that", "test clip", " ".join(w["w"] for w in words),
-                                 "Joe_Bartolozzi", "Twitch", "#ad")
         setup_tasks.stop_ollama()
-        if not marks or "#ad" not in kit["tiktok"] or "Joe_Bartolozzi" not in kit["tiktok"]:
-            raise RuntimeError(f"packaging LLM calls broke: {marks} {kit}")
-        return f"moments: {json.dumps(out)[:100]} | sfx: {[(m['t'], m['sound']) for m in marks]} | tiktok: {kit['tiktok'][:80]!r}"
+        if not marks:
+            raise RuntimeError("sound suggestions came back empty")
+        return f"moments: {json.dumps(out)[:100]} | suggested sfx: {[(m['t'], m['sound']) for m in marks]}"
 
     for fn in (tools, web, stt, rend, pkg, twitch, llm):
         fn()
