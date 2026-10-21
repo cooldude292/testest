@@ -8,8 +8,15 @@ from . import captions, config, reframe
 from .util import ffmpeg
 
 
+_encoders = None
+
+
 def _encoder_args():
-    if config.IS_APPLE_SILICON:
+    """Hardware H.264 on Apple Silicon when this ffmpeg has it, otherwise x264."""
+    global _encoders
+    if _encoders is None:
+        _encoders = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
+    if config.IS_APPLE_SILICON and "h264_videotoolbox" in _encoders:
         return ["-c:v", "h264_videotoolbox", "-b:v", "10M"]
     return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
 

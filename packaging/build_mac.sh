@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds dist/Clipworks.dmg on an Apple Silicon Mac. Used by CI; works locally too.
-set -euo pipefail
+set -uo pipefail
+set -e
 cd "$(dirname "$0")/.."
 mkdir -p build/bin
 
@@ -12,14 +13,28 @@ fetch_zip() {  # url, binary name
   test -x "build/bin/$2"
 }
 
+fetch_gz() {  # url, binary name
+  curl -fsSL "$1" | gunzip > "build/bin/$2"
+  chmod +x "build/bin/$2"
+}
+
+works() { [ -x "build/bin/$1" ] && "build/bin/$1" -hide_banner -version >/dev/null 2>&1; }
+
 echo "==> Static ffmpeg/ffprobe (arm64)"
-fetch_zip "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip" ffmpeg
-fetch_zip "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip" ffprobe
+# Cached between CI runs; otherwise try the primary build host, then a GitHub-hosted fallback.
+for b in ffmpeg ffprobe; do
+  if works "$b"; then echo "$b: cached"; continue; fi
+  if ! fetch_zip "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/$b.zip" "$b" || ! works "$b"; then
+    echo "$b: primary host failed, using ffmpeg-static fallback"
+    fetch_gz "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/$b-darwin-arm64.gz" "$b"
+  fi
+  works "$b"
+done
 build/bin/ffmpeg -hide_banner -version | head -1
 otool -L build/bin/ffmpeg | tail -n +2
 
 echo "==> deno (yt-dlp needs a JS runtime for YouTube)"
-fetch_zip "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-apple-darwin.zip" deno
+[ -x build/bin/deno ] || fetch_zip "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-apple-darwin.zip" deno
 build/bin/deno --version | head -1
 
 echo "==> Icon"
