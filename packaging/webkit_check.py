@@ -1,13 +1,30 @@
 """CI check: the Workbench loads a Twitch VOD and the preview actually plays in Safari (WebKit),
 the same engine the app window uses. Run against `Clipworks --serve`."""
+import subprocess
 import sys
 import time
 
 from selenium import webdriver
+from selenium.common.exceptions import SessionNotCreatedException
 from selenium.webdriver.common.by import By
 
 URL = sys.argv[1]
-d = webdriver.Safari()
+
+
+def safari():
+    """A fresh runner's Safari can take longer to come up than safaridriver waits for.
+    Kill whatever half-started instance is left and try again."""
+    for attempt in range(4):
+        try:
+            return webdriver.Safari()
+        except SessionNotCreatedException as ex:
+            print(f"Safari session attempt {attempt + 1} failed: {str(ex).splitlines()[0][:160]}", flush=True)
+            subprocess.run(["killall", "Safari"], capture_output=True)
+            time.sleep(5 + 5 * attempt)
+    return webdriver.Safari()
+
+
+d = safari()
 d.set_window_size(1440, 900)
 try:
     d.get("http://127.0.0.1:8765/")

@@ -57,6 +57,8 @@ jobs:
         run: |
           pip install selenium
           sudo safaridriver --enable
+          # First launch on a fresh image sets Safari up; do it before WebDriver's clock starts.
+          open -a Safari && sleep 10 && killall Safari || true
           dist/Clipworks.app/Contents/MacOS/Clipworks --serve &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8765/api/state >/dev/null && break; sleep 1; done
           python packaging/webkit_check.py https://www.twitch.tv/videos/2905281858
