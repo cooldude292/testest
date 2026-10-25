@@ -441,6 +441,7 @@ def run(job, ctx):
     spans = [(c["t"] - CTX_BEFORE, c["t"] + CTX_AFTER) for c in cands]
     words = transcribe_spans(job, ctx, wav, duration, spans)
     ctx.log(f"Transcribed {len(words)} words around the candidates")
+    _free_whisper()  # the judge model wants every GB it can get
 
     # ---- judge
     setup_tasks.ensure_ollama()
@@ -542,6 +543,17 @@ def run(job, ctx):
         job.clips.append(c)
         ctx.log(f"{name}: score {c['score']} | {c['what_happens'][:90]}")
         job.save(force=True)
+
+
+def _free_whisper():
+    try:
+        import mlx.core as mx
+        from mlx_whisper.transcribe import ModelHolder
+        ModelHolder.model = ModelHolder.model_path = None
+        mx.clear_cache()
+    except Exception:
+        pass
+    transcribe._fw_model = None
 
 
 def _overlap(a, b):

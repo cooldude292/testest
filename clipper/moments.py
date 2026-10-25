@@ -159,6 +159,11 @@ def ask_llm(prompt, schema=SCHEMA, think=False, num_predict=3000, system=SYSTEM,
     if r.status_code == 400 and "think" in r.text:
         body.pop("think")
         r = requests.post(f"{config.OLLAMA_URL}/api/chat", json=body, timeout=1800)
+    if r.status_code >= 500 and re.search(r"memory|terminated|exit status|unable to load|runner", r.text, re.I):
+        from . import setup_tasks
+        if setup_tasks.fall_back(r.text):
+            body["model"] = config.LLM_MODEL
+            r = requests.post(f"{config.OLLAMA_URL}/api/chat", json=body, timeout=1800)
     r.raise_for_status()
     content = r.json()["message"]["content"]
     return parse_json(content)

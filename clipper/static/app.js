@@ -957,6 +957,19 @@ function renderSystem(st) {
     !st.ready ? (() => { const d = steps.find(s => s.status === "running"); return d ? `PROVISIONING ${esc(d.label.toUpperCase())} · ${esc(d.message)}` : "PROVISIONING"; })() : "IDLE · AWAITING WORK ORDERS";
 }
 $("#retry-setup").onclick = () => api("/api/setup/retry", {method: "POST"});
+async function loadModels() {
+  const m = await api("/api/models").catch(() => null); if (!m) return;
+  const known = m.choices.some(c => c.tag === m.current);
+  $("#llm-pick").innerHTML = m.choices.map(c => `<option value="${c.tag}" ${c.tag === m.current ? "selected" : ""}>${esc(c.label)} · ${c.gb} GB${c.gb > m.ram_gb * 0.8 ? " · tight on this Mac" : ""}</option>`).join("") +
+    (known ? "" : `<option value="${esc(m.current)}" selected>${esc(m.current)}</option>`);
+  $("#llm-note").textContent = `This Mac has ${m.ram_gb} GB. If a model won't load mid-run, the factory switches to qwen3:14b by itself and keeps going.`;
+}
+$("#llm-use").onclick = async () => {
+  const model = $("#llm-custom").value.trim() || $("#llm-pick").value;
+  try { await api("/api/models", {method: "POST", body: JSON.stringify({model})}); toast(`SWITCHING TO ${model.toUpperCase()} · downloading if needed`); $("#llm-custom").value = ""; loadModels(); }
+  catch (e) { toast(e.message, true); }
+};
+loadModels();
 $("#btn-exports").onclick = async () => { const r = await api("/api/reveal-downloads", {method: "POST"}); if (!navigator.platform.startsWith("Mac")) toast(r.path); };
 
 /* ---------------- polling ---------------- */

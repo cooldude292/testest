@@ -57,6 +57,23 @@ def get_state():
     }
 
 
+@app.get("/api/models")
+def models():
+    return {"current": config.LLM_MODEL, "ram_gb": round(config.RAM_GB),
+            "choices": [{"tag": t, "gb": gb, "label": label} for t, gb, label in config.LLM_CHOICES]}
+
+
+@app.post("/api/models")
+def pick_model(body: dict):
+    name = str(body.get("model", "")).strip()
+    if not name or any(c.isspace() for c in name):
+        raise HTTPException(400, "Give an Ollama model tag, like qwen3:14b")
+    if any(j["status"] == "running" for j in manager.list()):
+        raise HTTPException(400, "Wait for the running order to finish before switching models")
+    setup_tasks.set_model(name)
+    return {"ok": True, "current": name}
+
+
 @app.post("/api/setup/retry")
 def retry_setup():
     setup_tasks.start()

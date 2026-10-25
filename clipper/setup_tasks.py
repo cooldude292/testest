@@ -231,6 +231,27 @@ def _whisper(key):
     _set(key, message="Downloaded")
 
 
+def set_model(name):
+    """Switch the language model (System page). Downloads it through the normal setup line."""
+    config.LLM_MODEL = name
+    config.save_setting("llm", name)
+    state["llm"].update(label=f"Language model · {name}", status="pending", progress=None, message="")
+    start()
+
+
+def fall_back(reason):
+    """The chosen model wouldn't load (usually memory). Drop to the safe one so an overnight run keeps going."""
+    if config.LLM_MODEL == config.FALLBACK_LLM:
+        return False
+    bad = config.LLM_MODEL
+    config.LLM_MODEL = config.FALLBACK_LLM
+    state["llm"].update(label=f"Language model · {config.LLM_MODEL}",
+                        message=f"{bad} failed to load ({reason[:120]}), switched to {config.LLM_MODEL}")
+    _llm("llm")
+    state["llm"]["status"] = "ok"
+    return True
+
+
 def ensure_ollama():
     """Ollama can quit between jobs (laptop sleep, app closed). Bring it back if so."""
     if not _ollama_up():

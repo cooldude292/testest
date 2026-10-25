@@ -260,7 +260,14 @@
         </div>
         <div class="panel">
           <div class="ph"><span class="id">SY-02</span>Configuration</div>
-          <div class="pb"><div class="kv" id="config"></div></div>
+          <div class="pb"><div class="kv" id="config"></div>
+            <div class="sect">Language model</div>
+            <div class="pad" style="display:flex;gap:6px;flex-wrap:wrap">
+              <select class="input" id="llm-pick" style="flex:1;min-width:220px"></select>
+              <input class="input mono" id="llm-custom" placeholder="or any Ollama tag" style="width:170px">
+              <button class="btn amber" id="llm-use">USE</button>
+              <div class="faint" id="llm-note" style="width:100%;font-size:10.5px;margin-top:2px"></div>
+            </div></div>
         </div>
       </div>
     </section>

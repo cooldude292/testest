@@ -17,7 +17,7 @@ your Mac. No accounts, no uploads, no subscription.
    down, click **Open Anyway**. You only do this once.
    (Terminal alternative: `xattr -dr com.apple.quarantine /Applications/Clipworks.app`)
 
-On first launch the System page downloads the AI models (about 7GB total: the
+On first launch the System page downloads the AI models (up to about 24GB: the
 language model, the speech model, and Ollama if you don't have it). You can load
 footage while that runs; the factory starts once they're ready.
 
@@ -118,7 +118,7 @@ Environment variables, mostly for development:
 
 | Variable | Default | What |
 |---|---|---|
-| `CLIPPER_LLM` | `qwen3:8b` | Any Ollama model. `qwen3:14b` is smarter, fits in 24GB, and is worth it for overnight runs. |
+| `CLIPPER_LLM` | by memory | Any Ollama model. Default is `qwen3.5:35b-a3b` on 24 GB+ Macs, `qwen3:14b` on 16 GB. Also pickable on the System page; if the chosen one won't load, runs fall back to `qwen3:14b`. |
 | `CLIPPER_JUDGE_THINK` | `1` | `0` makes the judge answer without reasoning first. Faster, less picky. |
 | `CLIPPER_WHISPER` | `mlx-community/whisper-large-v3-turbo` | Any MLX Whisper repo. |
 | `CLIPPER_COOKIES_FROM` | unset | `chrome`, `safari`, `firefox`... use that browser's logins for downloads. |
