@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from . import config, packaging, setup_tasks, sfx, sources
+from . import autoclip, config, packaging, setup_tasks, sfx, sources
 from .jobs import Manager
 
 app = FastAPI(title=config.APP_NAME)
@@ -140,6 +140,36 @@ def create_order(body: OrderReq):
             "max_clips": max(1, min(20, body.max_clips)), "min_len": min_len, "max_len": max_len,
             "layout": body.layout, "mode": body.mode, "source_title": body.title}
     return manager.submit(body.source.strip(), opts).to_dict()
+
+
+class AutoReq(BaseModel):
+    sources: list[str]
+    max_clips: int = 15
+    min_len: int = 15
+    max_len: int = 60
+    layout: str = "auto"
+
+
+@app.post("/api/auto")
+def create_auto(body: AutoReq):
+    """Overnight mode: one work order per stream, each clipped end to end on its own."""
+    if body.layout not in ("auto", "track", "split", "zoom", "fit", "center"):
+        raise HTTPException(400, "Unknown layout")
+    min_len = max(5, body.min_len)
+    max_len = max(min_len + 5, min(180, body.max_len))
+    out, errors = [], []
+    for raw in [x.strip() for x in body.sources if x.strip()][:30]:
+        try:
+            src, title = autoclip.resolve(raw)
+        except Exception as ex:
+            errors.append(f"{raw}: {ex}")
+            continue
+        opts = {"mode": "auto", "max_clips": max(1, min(50, body.max_clips)), "min_len": min_len, "max_len": max_len,
+                "layout": body.layout, "source_title": title}
+        out.append(manager.submit(src, opts).to_dict(light=True))
+    if not out:
+        raise HTTPException(400, "; ".join(errors) or "Paste at least one stream link")
+    return {"orders": out, "errors": errors}
 
 
 @app.post("/api/orders/{jid}/cancel")

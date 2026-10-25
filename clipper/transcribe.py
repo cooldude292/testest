@@ -7,14 +7,35 @@ import numpy as np
 from . import config
 
 
-def transcribe(audio_path, duration, ctx):
-    """Returns a flat list of words: [{"w": text, "s": start, "e": end}, ...]."""
+def transcribe(audio_path, duration, ctx, span=None):
+    """Returns a flat list of words: [{"w": text, "s": start, "e": end}, ...].
+
+    span=(a, b) transcribes just that stretch of a 16 kHz mono wav (times stay absolute), so
+    a 10-hour stream never has to sit in memory at once."""
+    if span:
+        a, b = span
+        audio = read_wav(audio_path, a, b)
+        fn = _mlx if config.IS_APPLE_SILICON else _faster_whisper
+        words = fn(audio, len(audio) / 16000, ctx)
+        return [{"w": w["w"], "s": w["s"] + a, "e": w["e"] + a} for w in words]
     if config.IS_APPLE_SILICON:
-        return _mlx(audio_path, duration, ctx)
-    return _faster_whisper(audio_path, duration, ctx)
+        return _mlx(str(audio_path), duration, ctx)
+    return _faster_whisper(read_wav(audio_path), duration, ctx)
 
 
-def _mlx(audio_path, duration, ctx):
+def read_wav(path, a=None, b=None):
+    """Float samples of a 16-bit wav, optionally just seconds a..b."""
+    with wave.open(str(path)) as wf:
+        sr = wf.getframerate()
+        if a is not None:
+            wf.setpos(min(int(a * sr), wf.getnframes()))
+            n = int((b - a) * sr)
+        else:
+            n = wf.getnframes()
+        return np.frombuffer(wf.readframes(n), np.int16).astype(np.float32) / 32768.0
+
+
+def _mlx(audio, duration, ctx):
     import mlx_whisper
     import mlx_whisper.transcribe as mt
 
@@ -38,7 +59,7 @@ def _mlx(audio_path, duration, ctx):
 
     mt.tqdm = types.SimpleNamespace(tqdm=Bar)
     result = mlx_whisper.transcribe(
-        str(audio_path),
+        audio,
         path_or_hf_repo=config.WHISPER_MODEL,
         word_timestamps=True,
         condition_on_previous_text=False,
@@ -51,13 +72,17 @@ def _mlx(audio_path, duration, ctx):
     return words
 
 
-def _faster_whisper(audio_path, duration, ctx):
+_fw_model = None
+
+
+def _faster_whisper(audio, duration, ctx):
+    # Takes samples, not a path: faster-whisper's own decoder breaks on newer PyAV.
+    global _fw_model
     from faster_whisper import WhisperModel
 
-    model = WhisperModel(config.WHISPER_MODEL, device="cpu", compute_type="int8")
-    # Hand over samples instead of a path: faster-whisper's own decoder breaks on newer PyAV.
-    with wave.open(str(audio_path)) as wf:
-        audio = np.frombuffer(wf.readframes(wf.getnframes()), np.int16).astype(np.float32) / 32768.0
+    if _fw_model is None:
+        _fw_model = WhisperModel(config.WHISPER_MODEL, device="cpu", compute_type="int8")
+    model = _fw_model
     segments, info = model.transcribe(
         audio,
         word_timestamps=True,

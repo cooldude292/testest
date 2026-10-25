@@ -10,10 +10,11 @@ import traceback
 import uuid
 from pathlib import Path
 
-from . import chat, config, download, moments, packaging, render, setup_tasks, sources, transcribe
+from . import autoclip, chat, config, download, moments, packaging, render, setup_tasks, sources, transcribe
 from .util import ffmpeg
 
 STAGES = ["download", "audio", "chat", "transcribe", "moments", "render"]
+AUTO_STAGES = ["audio", "signals", "mining", "transcribe", "judge", "rank", "video", "render"]
 
 
 class Cancelled(Exception):
@@ -123,7 +124,7 @@ class Manager:
         j = Job(source, options, order=order)
         j.title = options.get("source_title", "")
         rng = (f"{_tc(options['start'])}-{_tc(options['end'])}" if options.get("start") is not None
-               else options.get("section") or "full")
+               else "whole stream, auto" if options.get("mode") == "auto" else options.get("section") or "full")
         j.log(f"Work order WO-{order} received: {source} [{rng}]")
         j.save(force=True)
         with self.lock:
@@ -258,8 +259,9 @@ class Manager:
                 j.save(force=True)
                 continue
             j.status = "running"
+            awake = _stay_awake()
             try:
-                run_pipeline(j, Ctx(j))
+                (autoclip.run if j.options.get("mode") == "auto" else run_pipeline)(j, Ctx(j))
                 j.status, j.stage, j.progress = "done", "done", 1.0
                 j.message = f"Done: {len(j.clips)} clip(s)"
                 j.log(j.message)
@@ -270,7 +272,30 @@ class Manager:
                 j.status, j.error = "failed", f"{type(ex).__name__}: {ex}"
                 j.message = "Failed: " + j.error
                 j.log(traceback.format_exc()[-1500:])
+            finally:
+                if awake and self.q.empty():
+                    awake.terminate()
             j.save(force=True)
+
+
+_caffeinate = None
+
+
+def _stay_awake():
+    """Overnight runs die if the Mac idles to sleep. caffeinate holds it awake (screen can still
+    turn off) until we let go; it also exits by itself if the app dies."""
+    global _caffeinate
+    import os
+    import platform
+    if platform.system() != "Darwin" or not shutil.which("caffeinate"):
+        return None
+    if _caffeinate and _caffeinate.poll() is None:
+        return _caffeinate
+    try:
+        _caffeinate = subprocess.Popen(["caffeinate", "-is", "-w", str(os.getpid())])
+    except OSError:
+        _caffeinate = None
+    return _caffeinate
 
 
 def media_duration(path):

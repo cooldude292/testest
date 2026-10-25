@@ -43,10 +43,11 @@ function tick() {
 setInterval(tick, 1000); tick();
 
 /* ---------------- command line ---------------- */
-const HELP = "URL or file path = load source · DIS FAC PKG SHIP SYS = switch module · IN / OUT = mark range · SEND = dispatch · WO 1001 = open order";
+const HELP = "AUTO <url> = clip a whole stream overnight · URL or file path = load source to pick by hand · DIS FAC PKG SHIP SYS = switch module · IN / OUT = mark range · SEND = dispatch · WO 1001 = open order";
 function runCommand(raw) {
   const s = raw.trim(); if (!s) return;
   const up = s.toUpperCase(), [head, ...rest] = up.split(/\s+/);
+  if (head === "AUTO" && rest.length) return queueAuto(s.split(/\s+/).slice(1));
   if (/^https?:\/\//i.test(s) || s.startsWith("/") || s.startsWith("~")) return loadSource(s);
   const nav = {DIS: "discovery", DISC: "discovery", DISCOVERY: "discovery", WB: "discovery", FAC: "factory", FACTORY: "factory",
     PKG: "packaging", PACK: "packaging", PACKAGING: "packaging", SHIP: "shipping", SHIPPING: "shipping", SYS: "system", SYSTEM: "system"};
@@ -236,6 +237,25 @@ $("#opt-mode").addEventListener("change", updateSel);
   const a = parseTc($("#sel-in").value), b = parseTc($("#sel-out").value);
   if (a != null && b != null) setSel(a, b); else updateSel();
 }));
+async function queueAuto(sources) {
+  sources = sources.map(x => x.trim()).filter(Boolean);
+  if (!sources.length) return toast("Paste at least one stream link", true);
+  const [mn, mx] = $("#auto-len").value.split("-").map(Number);
+  $("#auto-go").disabled = true;
+  try {
+    const r = await api("/api/auto", {method: "POST", body: JSON.stringify({sources, max_clips: +$("#auto-n").value,
+      min_len: mn, max_len: mx, layout: $("#auto-layout").value})});
+    toast(`${r.orders.length} STREAM${r.orders.length === 1 ? "" : "S"} QUEUED: ${r.orders.map(o => "WO-" + o.order).join(" ")}`);
+    r.errors.forEach(e => toast(e, true));
+    $("#auto-src").value = "";
+    selOrder = r.orders[0].id; poll(); go("factory");
+  } catch (e) { toast(e.message, true); }
+  $("#auto-go").disabled = false;
+}
+$("#auto-go").onclick = () => queueAuto($("#auto-src").value.split(/\n+/));
+$("#auto-src").addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) $("#auto-go").click(); });
+$("#send-auto").onclick = () => src && queueAuto([src.source]);
+
 async function dispatch() {
   if (!sel || !src) return;
   const [mn, mx] = $("#opt-len").value.split("-").map(Number);
@@ -327,12 +347,15 @@ cv.addEventListener("pointerup", e => {
 
 /* ---------------- factory ---------------- */
 const STATIONS = [["download", "Intake"], ["audio", "Audio"], ["chat", "Chat"], ["transcribe", "Transcr."], ["moments", "Analysis"], ["render", "Assembly"]];
+const AUTO_STATIONS = [["audio", "Audio"], ["signals", "Signals"], ["mining", "Mining"], ["transcribe", "Transcr."], ["judge", "Judge"], ["rank", "Rank"], ["video", "Video"], ["render", "Assembly"]];
+const stationsOf = j => (j.options || {}).mode === "auto" ? AUTO_STATIONS : STATIONS;
+const rangeOf = (o, long) => o.mode === "auto" ? "WHOLE STREAM" : o.start != null ? `${tc(o.start)}–${tc(o.end)}${long ? `  (${tc(o.end - o.start)})` : ""}` : "FULL";
 const STATUS = {queued: ["QUEUED", ""], running: ["ACTIVE", "blue"], done: ["SHIPPED", "green"], failed: ["FAULT", "red"], cancelled: ["CANCELLED", "amber"]};
 let jobs = [], selOrder = null;
 
 function stationStates(j) {
-  const cur = STATIONS.findIndex(s => s[0] === j.stage);
-  return STATIONS.map((_, i) => j.status === "done" || i < cur ? "done" :
+  const st = stationsOf(j), cur = st.findIndex(s => s[0] === j.stage);
+  return st.map((_, i) => j.status === "done" || i < cur ? "done" :
     i === cur ? (j.status === "running" ? "cur" : j.status === "failed" ? "fail" : "") : "");
 }
 
@@ -346,7 +369,7 @@ function renderOrders(force) {
   const sig = JSON.stringify(jobs.map(j => [j.id, j.status, j.stage, j.progress && j.progress.toFixed(2), j.message, j.clips.length])) + selOrder;
   if (box.dataset.sig !== sig || force) {
     box.dataset.sig = sig;
-    box.innerHTML = !jobs.length ? `<div class="empty"><b>PRODUCTION LINE IDLE</b>Mark a range in the Workbench and dispatch it.</div>` :
+    box.innerHTML = !jobs.length ? `<div class="empty"><b>PRODUCTION LINE IDLE</b>Queue streams for an overnight run in Discovery, or mark a range by hand.</div>` :
       `<table class="dt"><thead><tr><th style="width:74px">Order</th><th style="width:86px">Status</th><th>Source</th><th style="width:136px">Range</th>
         <th style="width:72px">Stations</th><th style="width:110px">Progress</th><th class="r" style="width:46px">Units</th><th class="r" style="width:52px">Age</th></tr></thead><tbody>
       ${jobs.map(j => {
@@ -354,7 +377,7 @@ function renderOrders(force) {
         const pct = j.status === "done" ? 100 : (j.progress != null ? j.progress * 100 : 0);
         const indet = j.status === "running" && j.progress == null;
         return `<tr class="click ${j.id === selOrder ? "on" : ""}" data-id="${j.id}"><td class="data">WO-${j.order}</td><td><span class="tag ${cls}">${label}</span></td>
-          <td>${esc(j.title || j.source)}</td><td class="mono t2">${o.start != null ? `${tc(o.start)}–${tc(o.end)}` : "FULL"}</td>
+          <td>${esc(j.title || j.source)}</td><td class="mono t2">${rangeOf(o)}</td>
           <td><div class="mini-st">${stationStates(j).map(c => `<i class="${c}"></i>`).join("")}</div></td>
           <td>${j.status === "running" || j.status === "done" ? `<div class="meter ${j.status === "done" ? "green" : ""} ${indet ? "indet" : ""}"><i style="width:${pct.toFixed(1)}%"></i></div>` : `<span class="faint mono">—</span>`}</td>
           <td class="r data">${j.clips.length || "—"}</td><td class="r mono faint">${ago(j.created)}</td></tr>`;
@@ -380,12 +403,12 @@ function renderOrderDetail() {
     <div class="kv">
       <div>Status</div><div><span class="tag ${cls}">${label}</span></div>
       <div>Source</div><div>${esc(j.title || j.source)}</div>
-      <div>Range</div><div class="data">${o.start != null ? `${tc(o.start)} – ${tc(o.end)}  (${tc(o.end - o.start)})` : "FULL"}</div>
-      <div>Spec</div><div class="mono t2">${o.mode === "exact" ? "EXACT CUT" : `${o.max_clips} UNITS · ${o.min_len}–${o.max_len}s`} · ${o.layout === "auto" ? "AUTO" : LAYOUTS[o.layout] || o.layout}</div>
+      <div>Range</div><div class="data">${rangeOf(o, true)}</div>
+      <div>Spec</div><div class="mono t2">${o.mode === "exact" ? "EXACT CUT" : o.mode === "auto" ? `AUTO · UP TO ${o.max_clips} UNITS · ${o.min_len}–${o.max_len}s` : `${o.max_clips} UNITS · ${o.min_len}–${o.max_len}s`} · ${o.layout === "auto" ? "AUTO" : LAYOUTS[o.layout] || o.layout}</div>
       <div>Received</div><div class="mono t2">${isoTime(j.created)}</div>
     </div>
     <div class="sect">Stations</div>
-    <div class="stations">${stationStates(j).map((c, i) => `<div class="stn ${c}">${STATIONS[i][1]}</div>`).join("")}</div>
+    <div class="stations">${stationStates(j).map((c, i) => `<div class="stn ${c}">${stationsOf(j)[i][1]}</div>`).join("")}</div>
     <div style="padding:0 10px 8px"><div class="meter ${j.status === "done" ? "green" : ""} ${j.status === "running" && j.progress == null ? "indet" : ""}"><i style="width:${pct.toFixed(1)}%"></i></div>
       <div class="mono t2" style="margin-top:5px;font-size:11px">${esc(j.message)}</div></div>
     <div class="acts">
@@ -394,8 +417,17 @@ function renderOrderDetail() {
       ${j.status === "failed" || j.status === "cancelled" ? `<button class="btn amber" data-act="retry">RE-RUN</button>` : ""}
       ${j.status !== "running" && j.status !== "queued" ? `<button class="btn minimal" data-act="del">DELETE</button>` : ""}
     </div>
+    ${o.mode === "auto" && j.clips.length ? `<div class="sect">Picks, best first</div>
+    <table class="dt res"><thead><tr><th style="width:30px">#</th><th style="width:40px">Sc</th><th>Pick</th><th class="r" style="width:76px">TC</th></tr></thead><tbody>
+      ${j.clips.map((c, i) => `<tr class="click" data-unit="${i}"><td class="faint mono">${i + 1}</td>
+        <td><span class="score ${scoreCls(c.score)}">${c.score}</span></td>
+        <td class="wh"><div class="hook">${esc(c.hook || c.title)}</div><div class="t2" style="font-size:10.5px" title="${esc(c.what_happens || "")}">${esc(c.what_happens || c.reason || "")}</div>
+          <span class="why">${(c.why || []).map(w => `<span class="tag ${w.startsWith("viewers") ? "green" : "blue"}">${esc(w)}</span>`).join("")}</span></td>
+        <td class="r data">${tc(c.abs_start)}<div class="faint mono" style="font-size:10px">${Math.round(c.end - c.start)}s</div></td></tr>`).join("")}
+    </tbody></table>` : ""}
     <div class="sect">Production log</div>
     <pre class="log" style="max-height:340px;overflow:auto">${esc(j.log.join("\n"))}</pre>`;
+  $$("[data-unit]", box).forEach(tr => tr.onclick = () => { go("packaging"); openUnit(j.id, +tr.dataset.unit); });
   const lg = $(".log", box); if (stick) lg.scrollTop = lg.scrollHeight;
   $$("[data-act]", box).forEach(b => b.onclick = async () => {
     const a = b.dataset.act, id = j.id;
@@ -541,6 +573,13 @@ async function openUnit(jid, idx) {
   api(`/api/units/${jid}/${idx}/wave`).then(w => { if (bay && bay.jid === jid && bay.idx === idx) { wave = w; renderTrack(); } }).catch(() => {});
   $("#bay-empty").style.display = "none"; $("#bay-main").style.display = "";
   $("#pk-id").textContent = `WO-${bay.order} / ${pad(idx + 1)}`;
+  const c = j && j.clips[idx];
+  $("#pk-why-box").style.display = c && (c.what_happens || (c.why || []).length) ? "" : "none";
+  if (c) {
+    $("#pk-what").textContent = c.what_happens || "";
+    $("#pk-why").innerHTML = (c.why || []).map(w => `<span class="tag ${w.startsWith("viewers") ? "green" : "blue"}">${esc(w)}</span>`).join("") +
+      (c.clip_titles && c.clip_titles.length ? `<span class="faint" style="font-size:10.5px">viewer clips: ${c.clip_titles.map(t => `"${esc(t)}"`).join(", ")}</span>` : "");
+  }
   if (d.base_url) { pv.src = d.base_url; pv.currentTime = bay.spec.trim[0]; } else { pv.removeAttribute("src"); }
   $("#pk-render").disabled = !d.base_url;
   if (!d.base_url) $("#pk-status").textContent = "Made before Packaging existed. Re-run its work order in the Factory.";

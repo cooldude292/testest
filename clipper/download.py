@@ -68,26 +68,7 @@ def fetch(source, job_dir, section, ctx):
         ffmpeg(*args, "-c", "copy", out)
         return out, path.stem, {"offset": rng[0], "twitch_id": None}
 
-    def hook(d):
-        ctx.check()
-        if d["status"] != "downloading":
-            return
-        done = d.get("downloaded_bytes") or 0
-        total = d.get("total_bytes") or d.get("total_bytes_estimate")
-        frac = None
-        if total:
-            frac = done / total
-        elif d.get("fragment_count"):
-            frac = (d.get("fragment_index") or 0) / d["fragment_count"]
-        speed = d.get("speed")
-        eta = d.get("eta")
-        bits = [f"{_fmt_bytes(done)}" + (f" / {_fmt_bytes(total)}" if total else "")]
-        if speed:
-            bits.append(f"{_fmt_bytes(speed)}/s")
-        if eta:
-            bits.append(f"ETA {int(eta)//60}m{int(eta)%60:02d}s")
-        kind = "audio" if d.get("info_dict", {}).get("vcodec") == "none" else "video"
-        ctx.stage("download", frac, f"Downloading {kind}: " + ", ".join(bits))
+    hook = _progress_hook(ctx)
 
     opts = {
         "format": "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b",
@@ -133,6 +114,30 @@ def fetch(source, job_dir, section, ctx):
     meta = {"offset": rng[0] if rng else 0.0, "twitch_id": _twitch_id(info),
             "vod_duration": info.get("duration"), "channel": info.get("uploader") or info.get("channel")}
     return path, info.get("title") or "video", meta
+
+
+def _progress_hook(ctx):
+    def hook(d):
+        ctx.check()
+        if d["status"] != "downloading":
+            return
+        done = d.get("downloaded_bytes") or 0
+        total = d.get("total_bytes") or d.get("total_bytes_estimate")
+        frac = None
+        if total:
+            frac = done / total
+        elif d.get("fragment_count"):
+            frac = (d.get("fragment_index") or 0) / d["fragment_count"]
+        speed = d.get("speed")
+        eta = d.get("eta")
+        bits = [f"{_fmt_bytes(done)}" + (f" / {_fmt_bytes(total)}" if total else "")]
+        if speed:
+            bits.append(f"{_fmt_bytes(speed)}/s")
+        if eta:
+            bits.append(f"ETA {int(eta)//60}m{int(eta)%60:02d}s")
+        kind = "audio" if d.get("info_dict", {}).get("vcodec") == "none" else "video"
+        ctx.stage("download", frac, f"Downloading {kind}: " + ", ".join(bits))
+    return hook
 
 
 def _twitch_id(info):
@@ -243,3 +248,48 @@ def _hls_slice(fmt, rng, job_dir, out, ctx):
     parts.rmdir()
     ctx.log(f"Grabbed {len(pick)} chunks ({pick[0][0]/60:.1f}-{(pick[-1][0]+pick[-1][1])/60:.1f} min)")
     return pick[0][0]
+
+
+def fetch_audio(source, job_dir, ctx):
+    """Whole-source audio as 16 kHz mono wav, for overnight runs that only need video for the winners.
+    Twitch has an audio-only rendition (~130MB/hour), so a long stream is minutes, not hours.
+    Returns (wav_path, title, meta)."""
+    import json
+    wav, saved = job_dir / "audio.wav", job_dir / "audio.json"
+    if wav.exists() and saved.exists():
+        d = json.loads(saved.read_text())
+        return wav, d["title"], d["meta"]
+    source = source.strip()
+    if not is_url(source):
+        path = Path(source).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(f"No such file: {path}")
+        ctx.stage("audio", None, "Pulling audio out of the file")
+        ffmpeg("-i", path, "-vn", "-ac", "1", "-ar", "16000", wav)
+        title, meta = path.stem, {"offset": 0.0, "twitch_id": None, "local": str(path)}
+    else:
+        opts = {
+            "format": "Audio_Only/ba/worst[vcodec!=none][acodec!=none]/b",
+            "outtmpl": str(job_dir / "audio_src.%(ext)s"),
+            "progress_hooks": [_progress_hook(ctx)],
+            "noplaylist": True, "quiet": True, "no_warnings": True, "noprogress": True,
+            "concurrent_fragment_downloads": 8,
+        }
+        ctx.stage("audio", None, "Looking up the stream")
+        info = _extract_with_cookie_fallback(source, opts, ctx)
+        if info.get("_type") == "playlist" and info.get("entries"):
+            info = info["entries"][0]
+        got = sorted(job_dir.glob("audio_src.*"), key=lambda p: p.stat().st_size)
+        if not got:
+            raise RuntimeError("yt-dlp finished but no audio showed up")
+        ctx.stage("audio", None, "Converting audio")
+        ffmpeg("-i", got[-1], "-vn", "-ac", "1", "-ar", "16000", wav)
+        for g in got:
+            g.unlink(missing_ok=True)
+        heat = [(h["start_time"], h["end_time"], h["value"]) for h in info.get("heatmap") or []] or None
+        title = info.get("title") or "stream"
+        meta = {"offset": 0.0, "twitch_id": _twitch_id(info), "vod_duration": info.get("duration"),
+                "channel": info.get("uploader") or info.get("channel"), "heatmap": heat,
+                "webpage_url": info.get("webpage_url") or source}
+    saved.write_text(json.dumps({"title": title, "meta": meta}))
+    return wav, title, meta

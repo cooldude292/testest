@@ -30,6 +30,7 @@ IS_APPLE_SILICON = platform.system() == "Darwin" and platform.machine() == "arm6
 OLLAMA_URL = os.environ.get("CLIPPER_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 LLM_MODEL = os.environ.get("CLIPPER_LLM", "qwen3:8b")
 LLM_CONTEXT = int(os.environ.get("CLIPPER_LLM_CTX", "16384"))
+JUDGE_THINK = os.environ.get("CLIPPER_JUDGE_THINK", "1") != "0"   # let the model reason before judging a moment
 
 # Whisper: MLX build on Apple Silicon, faster-whisper everywhere else.
 WHISPER_MODEL = os.environ.get(

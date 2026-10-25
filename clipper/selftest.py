@@ -180,13 +180,37 @@ def run(args):
                                                     transcript=transcript))
         from clipper import packaging
         marks = packaging.suggest_sfx(words, "Nobody expected that", 6.0)
-        setup_tasks.stop_ollama()
         if not marks:
             raise RuntimeError("sound suggestions came back empty")
         return f"moments: {json.dumps(out)[:100]} | suggested sfx: {[(m['t'], m['sound']) for m in marks]}"
 
-    for fn in (tools, web, stt, rend, pkg, twitch, llm):
+    @check("overnight auto run on a whole Twitch VOD (scaled down)", 2400)
+    def auto():
+        url = args[args.index("--twitch") + 1] if "--twitch" in args else None
+        if not url or "--llm" not in args:
+            return "skipped (needs --twitch and --llm)"
+        from clipper import autoclip, config as cfg, jobs
+        cfg.JUDGE_THINK = True
+        j = jobs.Job(url, {"mode": "auto", "max_clips": 1, "max_candidates": 3, "min_len": 10, "max_len": 40,
+                           "layout": "auto"}, jid="selftest-auto")
+        autoclip.run(j, Ctx())
+        if not j.clips:
+            raise RuntimeError("no clips came out")
+        c = j.clips[0]
+        out = j.dir / c["file"]
+        d = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height:format=duration",
+                                       "-of", "json", str(out)], capture_output=True, text=True).stdout)
+        if (d["streams"][0]["width"], d["streams"][0]["height"]) != (1080, 1920):
+            raise RuntimeError(f"bad clip {d}")
+        judged = json.loads((j.dir / "judged.json").read_text())
+        return (f"{len(judged)} judged, clip at {c['abs_start']:.0f}s score {c['score']} "
+                f"({float(d['format']['duration']):.0f}s) why={c.get('why')} | {c.get('what_happens', '')[:80]}")
+
+    for fn in (tools, web, stt, rend, pkg, twitch, llm, auto):
         fn()
+    if "--llm" in args:
+        from clipper import setup_tasks
+        setup_tasks.stop_ollama()
     sys.stdout.flush()
 
     print("\n=== SELFTEST RESULTS ===")

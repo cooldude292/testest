@@ -87,3 +87,45 @@ def baseline_rate(video_id, vod_duration, samples=40):
     with ThreadPoolExecutor(8) as pool:
         rates = [r for r in pool.map(rate, range(samples)) if r]
     return float(sorted(rates)[len(rates) // 2]) if rates else None
+
+
+# ---------- viewer clips and channels ----------
+
+def _gql(query):
+    r = requests.post(GQL, headers={"Client-Id": CLIENT_ID}, json={"query": query}, timeout=30)
+    r.raise_for_status()
+    return r.json().get("data") or {}
+
+
+_CLIP_FIELDS = "id title viewCount durationSeconds videoOffsetSeconds"
+
+
+def vod_clips(video_id):
+    """Clips viewers made of this VOD: [{title, viewCount, durationSeconds, videoOffsetSeconds}].
+
+    The VOD's own clip list stops at 100 and can't be paged without an integrity token, so the
+    channel's top clips for the last day/week/month are merged in too."""
+    v = _gql('query{video(id:"%s"){owner{login} clips(first:100){edges{node{%s}}}}}' % (video_id, _CLIP_FIELDS))
+    v = v.get("video") or {}
+    out = {e["node"]["id"]: e["node"] for e in ((v.get("clips") or {}).get("edges") or [])}
+    login = (v.get("owner") or {}).get("login")
+    if login:
+        for period in ("LAST_DAY", "LAST_WEEK", "LAST_MONTH"):
+            for sort in ("VIEWS_DESC", "CREATED_AT_DESC"):
+                try:
+                    d = _gql('query{user(login:"%s"){clips(first:100, criteria:{period:%s, sort:%s})'
+                             '{edges{node{%s video{id}}}}}}' % (login, period, sort, _CLIP_FIELDS))
+                except requests.RequestException:
+                    continue
+                for e in (((d.get("user") or {}).get("clips") or {}).get("edges") or []):
+                    n = e["node"]
+                    if (n.pop("video", None) or {}).get("id") == str(video_id) and n.get("videoOffsetSeconds") is not None:
+                        out[n["id"]] = n
+    return [c for c in out.values() if c.get("videoOffsetSeconds") is not None]
+
+
+def latest_vods(login, n=5):
+    """Most recent past broadcasts of a channel: [{id, title, lengthSeconds, publishedAt}]."""
+    d = _gql('query{user(login:"%s"){videos(first:%d, type:ARCHIVE, sort:TIME){edges{node{id title lengthSeconds publishedAt}}}}}'
+             % (login, n))
+    return [e["node"] for e in (((d.get("user") or {}).get("videos") or {}).get("edges") or [])]

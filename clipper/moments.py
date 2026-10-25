@@ -143,20 +143,22 @@ def _mmss(t):
     return f"{t//3600}:{t%3600//60:02d}:{t%60:02d}" if t >= 3600 else f"{t//60:02d}:{t%60:02d}"
 
 
-def ask_llm(prompt, schema=SCHEMA):
+def ask_llm(prompt, schema=SCHEMA, think=False, num_predict=3000, system=SYSTEM, temperature=0.3):
+    """One structured call to the local model. think=True lets qwen3 reason before answering:
+    slower, but noticeably better at saying no to weak moments."""
     body = {
         "model": config.LLM_MODEL,
-        "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         "stream": False,
         "format": schema,
-        "think": False,
+        "think": think,
         "keep_alive": "15m",
-        "options": {"temperature": 0.3, "num_ctx": config.LLM_CONTEXT, "num_predict": 3000},
+        "options": {"temperature": temperature, "num_ctx": config.LLM_CONTEXT, "num_predict": num_predict},
     }
-    r = requests.post(f"{config.OLLAMA_URL}/api/chat", json=body, timeout=900)
+    r = requests.post(f"{config.OLLAMA_URL}/api/chat", json=body, timeout=1800)
     if r.status_code == 400 and "think" in r.text:
         body.pop("think")
-        r = requests.post(f"{config.OLLAMA_URL}/api/chat", json=body, timeout=900)
+        r = requests.post(f"{config.OLLAMA_URL}/api/chat", json=body, timeout=1800)
     r.raise_for_status()
     content = r.json()["message"]["content"]
     return parse_json(content)

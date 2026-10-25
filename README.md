@@ -1,8 +1,8 @@
 # Clipworks
 
-Local clip factory for streams and long videos. Load a stream, find the good part,
-send it to the factory, get finished 9:16 clips with captions and a hook. Everything
-runs on your Mac. No accounts, no uploads, no subscription.
+Local clip factory for streams and long videos. Paste a stream before bed, wake up to a
+stack of finished 9:16 clips with captions and hooks, ranked best first. Everything runs on
+your Mac. No accounts, no uploads, no subscription.
 
 ![Factory](docs/factory.png)
 ![Packaging](docs/packaging.png)
@@ -25,16 +25,50 @@ footage while that runs; the factory starts once they're ready.
 
 Four stations, left to right, on <kbd>F1</kbd>–<kbd>F4</kbd> (<kbd>F5</kbd> is System):
 
-**F1 Discovery: find the good part.** Paste a Twitch, YouTube or Kick link into the command
-line and press GO, or use Open file. The source plays in the monitor. Under it is the
-signal timeline: Twitch chat density for the whole stream (from the chat replay), or
-YouTube's "most replayed" graph. The strongest stretches are listed under Signal Peaks.
-Drag on the timeline or press <kbd>I</kbd>/<kbd>O</kbd> to mark a range, then dispatch it:
+**F1 Discovery: pick streams.** The front page is the **Overnight run** box. Paste one link per
+line and hit **Queue for tonight**:
+- a Twitch VOD (`twitch.tv/videos/...`)
+- a Twitch channel (`twitch.tv/name`), which means its latest past broadcast
+- a YouTube video, a Kick VOD, or a file
+
+Pick how many clips you want per stream (default 15) and how long. Streams run one after
+another, and the Mac is kept awake while they do (plug it in and leave the lid open). You
+can also type `AUTO <link> <link>` in the command line.
+
+What happens to each stream:
+1. **Audio only, whole stream.** Twitch has an audio rendition, so 4 hours downloads in a
+   minute or two. No video yet.
+2. **Audience signals for every second**: how fast chat is going, chat literally asking for a
+   clip ("CLIP IT", "someone clip that"), clips viewers already made of the VOD (weighted by
+   their views, so other people's clip bots don't count), YouTube's most-replayed graph, loudness.
+3. **Candidates**: the strongest 25 to 120 spots. With no audience signal at all (a file, a
+   YouTube video without the graph) the AI reads the whole transcript to propose them.
+4. **Transcribe** around the candidates, in 10 minute chunks.
+5. **Judge.** The AI looks at each candidate with the transcript *and* what chat typed (chat
+   says what happened on screen, which the transcript can't). It cuts tight boundaries, scores
+   standalone / payoff / first seconds, and rejects junk: raids, sub trains, TTS, reading chat,
+   loading screens, inside jokes. It thinks before answering, which is slow and worth it.
+6. **Head to head.** Survivors are ranked against each other in small heats, a few rounds.
+7. **Video for the winners only**, then reframe and captions. Results land in Packaging.
+
+A 4 hour stream takes roughly 1 to 2 hours on an M-series Mac. Every step saves to disk, so if
+something dies, **Re-run** picks up where it stopped. Each pick shows what happens in it and
+why it was chosen ("viewers clipped this", "chat asking for a clip").
+
+How the signals were chosen: measured on 8 Twitch VODs from 5 streamers (33 hours, 650k chat
+messages) against the 900+ clips viewers made of them. Chat speed alone put 18% of clip views
+in its top 20 picks; speed plus "clip it" 39%. Word lists for laughing/shock/hype looked great
+tuned on one streamer and fell apart on the others, so they're only used to explain picks.
+
+**Picking by hand still works.** Paste a link in the command line and press GO: the source
+plays in the monitor over the chat/most-replayed timeline. Drag on the timeline or press
+<kbd>I</kbd>/<kbd>O</kbd> to mark a range, then dispatch it:
 - **AI selection**: the factory finds the best clips inside your range.
 - **Exact cut**: your range is the clip (3 s to 3 min).
+- **Auto-clip whole stream** queues the loaded source for an overnight run.
 
-**F2 Factory: make the clips.** Each work order downloads just that range, reads chat,
-transcribes, picks moments, reframes to 9:16 and captions. Watch it move through the stations.
+**F2 Factory: watch it work.** Every work order moves through its stations. Overnight runs show
+the ranked picks with what happens and why; click one to open it in Packaging.
 
 **F3 Packaging: you do the sounds, it helps.** The edit bay for each clip:
 - A sound effects track under a live preview, with the clip's waveform drawn behind it so
@@ -57,8 +91,8 @@ transcribes, picks moments, reframes to 9:16 and captions. Watch it move through
 (`<hook> (WO-1003-01).mp4`); **Ship all ready** does every one that hasn't gone out yet.
 You can also ship straight from Packaging once a render finishes.
 
-Commands you can type: a URL or file path, `DIS` `FAC` `PKG` `SHIP` `SYS`, `IN`, `OUT`, `SEND`,
-`WO 1001`, `HELP`.
+Commands you can type: `AUTO <links>`, a URL or file path, `DIS` `FAC` `PKG` `SHIP` `SYS`, `IN`,
+`OUT`, `SEND`, `WO 1001`, `HELP`.
 
 Layouts, picked automatically unless you choose one:
 - **Facecam / gameplay** when there's a webcam overlay
@@ -84,7 +118,8 @@ Environment variables, mostly for development:
 
 | Variable | Default | What |
 |---|---|---|
-| `CLIPPER_LLM` | `qwen3:8b` | Any Ollama model. `qwen3:14b` is smarter and fits in 24GB. |
+| `CLIPPER_LLM` | `qwen3:8b` | Any Ollama model. `qwen3:14b` is smarter, fits in 24GB, and is worth it for overnight runs. |
+| `CLIPPER_JUDGE_THINK` | `1` | `0` makes the judge answer without reasoning first. Faster, less picky. |
 | `CLIPPER_WHISPER` | `mlx-community/whisper-large-v3-turbo` | Any MLX Whisper repo. |
 | `CLIPPER_COOKIES_FROM` | unset | `chrome`, `safari`, `firefox`... use that browser's logins for downloads. |
 
@@ -97,4 +132,7 @@ Environment variables, mostly for development:
 - A really tiny facecam might not get detected; you'll get the gameplay zoom instead.
 - Reaction content can come out confusing, since the clip shows the reaction but not
   always what they're reacting to.
+- The judge can't see the video. Pure visual moments only get through if chat or viewer
+  clips make it obvious. The most-viewed viewer clips always survive the judge for that reason.
+- A laptop with the lid closed sleeps no matter what. Leave it open and plugged in.
 - The LLM's virality score is a guess. Watch the clips.
