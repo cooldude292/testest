@@ -245,11 +245,19 @@ def fall_back(reason):
         return False
     bad = config.LLM_MODEL
     config.LLM_MODEL = config.FALLBACK_LLM
+    fell_back.append((bad, reason))
     state["llm"].update(label=f"Language model · {config.LLM_MODEL}",
                         message=f"{bad} failed to load ({reason[:120]}), switched to {config.LLM_MODEL}")
-    _llm("llm")
+    try:
+        _llm("llm")  # download it if this Mac doesn't have it yet
+    except Exception as ex:
+        state["llm"].update(status="error", message=f"Fallback {config.LLM_MODEL} couldn't download: {ex}")
+        return False
     state["llm"]["status"] = "ok"
     return True
+
+
+fell_back = []   # (model, Ollama's error) for each switch, so a run can log why
 
 
 def ensure_ollama():

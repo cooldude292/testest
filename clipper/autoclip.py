@@ -360,6 +360,21 @@ def _copied(hook):
     return re.sub(r"[^a-z ]", "", hook.lower()).strip() in _EXAMPLE_HOOKS
 
 
+def _warm_up(ctx):
+    """Load the judge model with a tiny call first. If it won't load, switch now and say so."""
+    want = config.LLM_MODEL
+    ctx.stage("judge", None, f"Loading {want}")
+    try:
+        moments.ask_llm('Reply with {"ok": true}', {"type": "object", "properties": {"ok": {"type": "boolean"}}},
+                        num_predict=20)
+    except Exception as ex:
+        raise RuntimeError(f"Couldn't run the language model (Ollama {moments.ollama_version()}): {ex}")
+    for bad, why in setup_tasks.fell_back:
+        ctx.log(f"{bad} wouldn't run (Ollama {moments.ollama_version()}: {why[:200]}). Using {config.LLM_MODEL}")
+    setup_tasks.fell_back.clear()
+    ctx.log(f"Judging with {config.LLM_MODEL}" + (" (thinking on)" if config.JUDGE_THINK else ""))
+
+
 def tournament(pool, kind, ctx, rounds=3):
     """Rank in small heats, reshuffled each round. Returns {index: 0..1 strength}."""
     if len(pool) < 2:
@@ -448,8 +463,10 @@ def run(job, ctx):
     msgs_t = np.array([m[0] for m in msgs]) if msgs else np.array([])
     msgs_x = [m[1] for m in msgs]
     chat_base = len(msgs) / duration if msgs else None
+    _warm_up(ctx)
     jpath = d / "judged.json"
     judged = _load(jpath) or {}
+    streak = 0
     for k, c in enumerate(cands):
         ctx.check()
         key = f"{c['t']:.0f}"
@@ -460,6 +477,9 @@ def run(job, ctx):
                                            f"({kept} kept so far)")
         judged[key] = judge(c, words, msgs_t, msgs_x, chat_base, kind, channel, min_len, max_len)
         _save(jpath, judged)
+        streak = streak + 1 if judged[key]["verdict"] == "error" else 0
+        if streak >= 3:  # the model is down, not picky; stop instead of burning through every moment
+            raise RuntimeError(f"The LLM keeps failing ({judged[key]['reject_reason']}). Re-run picks up from here.")
     results = list(judged.values())
     errors = sum(1 for r in results if r["verdict"] == "error")
     if errors == len(results):

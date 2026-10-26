@@ -159,14 +159,31 @@ def ask_llm(prompt, schema=SCHEMA, think=False, num_predict=3000, system=SYSTEM,
     if r.status_code == 400 and "think" in r.text:
         body.pop("think")
         r = requests.post(f"{config.OLLAMA_URL}/api/chat", json=body, timeout=1800)
-    if r.status_code >= 500 and re.search(r"memory|terminated|exit status|unable to load|runner", r.text, re.I):
+    if r.status_code >= 500:
+        # Usually the model failed to load: too big for this Mac, or an Ollama too old for it.
+        # Run on the safe model instead of failing every call of an overnight run.
         from . import setup_tasks
-        if setup_tasks.fall_back(r.text):
+        if setup_tasks.fall_back(_ollama_error(r)):
             body["model"] = config.LLM_MODEL
             r = requests.post(f"{config.OLLAMA_URL}/api/chat", json=body, timeout=1800)
-    r.raise_for_status()
+    if not r.ok:
+        raise RuntimeError(f"Ollama {r.status_code} on {body['model']}: {_ollama_error(r)}")
     content = r.json()["message"]["content"]
     return parse_json(content)
+
+
+def _ollama_error(r):
+    try:
+        return str(r.json().get("error") or r.text)[:400]
+    except ValueError:
+        return r.text[:400]
+
+
+def ollama_version():
+    try:
+        return requests.get(f"{config.OLLAMA_URL}/api/version", timeout=5).json().get("version", "?")
+    except Exception:
+        return "?"
 
 
 def parse_json(text):
