@@ -11,7 +11,8 @@ your Mac. No accounts, no uploads, no subscription.
 ## Install (Mac, Apple Silicon)
 
 1. Download **[Clipworks.dmg](https://github.com/cooldude292/testest/releases/download/clipworks-latest/Clipworks.dmg)**.
-2. Open it and drag Clipworks into Applications.
+2. Open it and double-click Clipworks (or drag it into Applications, either works). It puts itself in
+   Applications, sends any older Clipworks and the DMG to the Trash, and ejects the disk image.
 3. Open Clipworks. macOS will refuse the first time because the app isn't signed with
    a paid Apple developer account. Go to **System Settings → Privacy & Security**, scroll
    down, click **Open Anyway**. You only do this once.

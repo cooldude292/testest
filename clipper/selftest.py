@@ -74,6 +74,14 @@ def run(args):
         enc = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
         return f"{found}  videotoolbox={'h264_videotoolbox' in enc} x264={'libx264' in enc}"
 
+    @check("finds its own app bundle (for install + cleanup)")
+    def bundle():
+        from clipper import install
+        b = install._bundle()
+        if config.FROZEN and (not b or b.suffix != ".app"):
+            raise RuntimeError(f"bundle lookup failed: {b}")
+        return f"{b} (would {'clean up' if b and b.parent == install.APPS else 'install to /Applications'})"
+
     @check("web UI served")
     def web():
         from fastapi.testclient import TestClient
@@ -206,7 +214,7 @@ def run(args):
         return (f"{len(judged)} judged, clip at {c['abs_start']:.0f}s score {c['score']} "
                 f"({float(d['format']['duration']):.0f}s) why={c.get('why')} | {c.get('what_happens', '')[:80]}")
 
-    for fn in (tools, web, stt, rend, pkg, twitch, llm, auto):
+    for fn in (tools, bundle, web, stt, rend, pkg, twitch, llm, auto):
         fn()
     if "--llm" in args:
         from clipper import setup_tasks

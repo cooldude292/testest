@@ -29,6 +29,10 @@ def main():
         sys.stdout.flush()
         os._exit(code)  # don't wait on library worker threads
 
+    from clipper import install
+    if install.run():  # just copied into /Applications and reopened from there
+        return
+
     from clipper import config
     port = _free_port(config.PORT)
 
