@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+python-multipart
+requests
+numpy
+pillow
+opencv-python-headless
+yt-dlp[default]
+huggingface_hub
+mlx-whisper; sys_platform == "darwin" and platform_machine == "arm64"
+faster-whisper; sys_platform != "darwin" or platform_machine != "arm64"

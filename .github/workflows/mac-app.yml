@@ -1,0 +1,108 @@
+name: Build Clipworks for macOS
+
+on:
+  push:
+    branches: ["claude/busy-mccarthy-3t772e"]
+    paths: ["clipper/**", "app_main.py", "packaging/**", "requirements*.txt", ".github/workflows/mac-app.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mac-app
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-app.txt
+
+      - name: Cache bundled tools (ffmpeg, ffprobe, deno)
+        uses: actions/cache@v4
+        with:
+          path: build/bin
+          key: macbin-v1
+
+      - name: Build app and DMG
+        run: bash packaging/build_mac.sh
+
+      - name: Selftest the packaged app
+        timeout-minutes: 40
+        env:
+          CLIPPER_DATA: ${{ runner.temp }}/clipworks-data
+          PYTHONUNBUFFERED: "1"
+        run: |
+          dist/Clipworks.app/Contents/MacOS/Clipworks --selftest \
+            --twitch https://www.twitch.tv/videos/2905281858 --llm
+
+      - name: Preview plays in WebKit (Safari)
+        timeout-minutes: 10
+        env:
+          CLIPPER_DATA: ${{ runner.temp }}/clipworks-web
+          CLIPWORKS_NO_SETUP: "1"
+        run: |
+          pip install selenium
+          sudo safaridriver --enable
+          # First launch on a fresh image sets Safari up; do it before WebDriver's clock starts.
+          open -a Safari && sleep 10 && killall Safari || true
+          dist/Clipworks.app/Contents/MacOS/Clipworks --serve &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8765/api/state >/dev/null && break; sleep 1; done
+          python packaging/webkit_check.py https://www.twitch.tv/videos/2905281858
+
+      - name: App window launches
+        timeout-minutes: 5
+        env:
+          CLIPWORKS_NO_SETUP: "1"
+          CLIPWORKS_NO_INSTALL: "1"
+        run: |
+          pkill -f "Clipworks --serve" || true
+          for i in $(seq 1 20); do curl -sf http://127.0.0.1:8765/api/state >/dev/null || break; sleep 1; done
+          dist/Clipworks.app/Contents/MacOS/Clipworks > app_window.log 2>&1 &
+          APP=$!
+          ok=""
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8765/api/state >/dev/null && ok=1 && break; sleep 1; done
+          sleep 8
+          screencapture -x app_window.png || true
+          if [ -z "$ok" ] || ! kill -0 $APP 2>/dev/null; then echo "app did not stay up"; cat app_window.log; exit 1; fi
+          echo "window process alive, engine responding"
+          osascript -e 'tell application "System Events" to get name of every window of (every process whose name is "Clipworks")' || true
+          kill $APP
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: |
+            webkit_workbench.png
+            app_window.png
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Clipworks-dmg
+          path: dist/Clipworks.dmg
+          retention-days: 14
+
+      - name: Publish download (latest build)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete clipworks-latest --yes --cleanup-tag || true
+          gh release create clipworks-latest dist/Clipworks.dmg \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "Clipworks (latest build)" \
+            --notes "Built from ${GITHUB_SHA::7}. Unsigned: first launch needs System Settings → Privacy & Security → Open Anyway."

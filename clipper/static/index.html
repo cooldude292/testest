@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clipworks</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%231c2127'/%3E%3Crect x='7' y='7' width='8' height='8' fill='%23ec9a3c'/%3E%3C/svg%3E">
+</head>
+<body>
+<div class="app">
+  <header class="cmdbar">
+    <div class="mark"><i></i><b>CLIPWORKS</b><span>PRODUCTION CONSOLE</span></div>
+    <div class="cmd">
+      <span class="prompt">&gt;</span>
+      <input id="cmd" placeholder="Paste a Twitch / YouTube / Kick URL or type a command (HELP)" autocomplete="off" spellcheck="false">
+      <button class="go" id="cmd-go">GO</button>
+    </div>
+    <div class="clock"><span id="clock-date"></span><span id="clock"></span></div>
+  </header>
+
+  <nav class="tabs">
+    <a href="#discovery" data-page="discovery"><span class="fk">F1</span>Discovery</a>
+    <span class="flow">▸</span>
+    <a href="#factory" data-page="factory"><span class="fk">F2</span>Factory <span class="n" id="nav-factory"></span></a>
+    <span class="flow">▸</span>
+    <a href="#packaging" data-page="packaging"><span class="fk">F3</span>Packaging <span class="n" id="nav-packaging"></span></a>
+    <span class="flow">▸</span>
+    <a href="#shipping" data-page="shipping"><span class="fk">F4</span>Shipping <span class="n" id="nav-shipping"></span></a>
+    <a href="#system" data-page="system" class="sys-tab"><span class="fk">F5</span>System <span class="n" id="nav-system"></span></a>
+    <div class="right"><button class="btn minimal" id="btn-file">Open file…</button><input type="file" id="file-input" accept="video/*" hidden>
+      <button class="btn minimal" id="btn-exports">Downloads</button></div>
+  </nav>
+
+  <div class="stage">
+    <!-- DISCOVERY -->
+    <section class="page" id="page-discovery">
+      <div class="grid wb-empty" id="wb-empty">
+        <div class="col">
+        <div class="panel">
+          <div class="ph"><span class="id">DS-00</span>Overnight run<span class="right faint mono">WHOLE STREAM · AUTOMATIC</span></div>
+          <div class="pad auto-form">
+            <textarea class="input mono" id="auto-src" rows="4" spellcheck="false"
+              placeholder="One per line: a Twitch VOD, a channel (twitch.tv/name = its latest stream), a YouTube video, a Kick VOD"></textarea>
+            <div class="auto-opts">
+              <label>Clips per stream <select class="input" id="auto-n"><option>5</option><option>10</option><option selected>15</option><option>20</option><option>30</option></select></label>
+              <label>Length <select class="input" id="auto-len"><option value="10-30">10–30 s</option><option value="15-45">15–45 s</option><option value="15-60" selected>15–60 s</option><option value="30-90">30–90 s</option></select></label>
+              <label>Layout <select class="input" id="auto-layout">
+                <option value="auto">AUTO</option><option value="split">FACECAM / GAMEPLAY</option><option value="track">FOLLOW SPEAKER</option>
+                <option value="zoom">GAMEPLAY ZOOM</option><option value="fit">FULL FRAME / BLUR</option><option value="center">CENTER CROP</option></select></label>
+              <span style="flex:1"></span>
+              <button class="btn amber" id="auto-go">QUEUE FOR TONIGHT ▸</button>
+            </div>
+            <div class="auto-how faint">Pulls the whole stream's audio and chat, finds where the audience lost it (chat speed, "clip it",
+              clips viewers already made, most-replayed), has the AI judge every candidate strictly and rank the survivors
+              head to head, then downloads video for the winners only. Streams run one after another. A 4 hour stream
+              takes a couple of hours; leave it running.</div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="ph"><span class="id">DS-01</span>Source log<span class="right faint mono" id="recent-n"></span></div>
+          <div class="pb" id="recent"></div>
+        </div>
+        </div>
+        <div class="panel">
+          <div class="ph"><span class="id">SYS</span>Readiness</div>
+          <div class="pb">
+            <div class="boot" id="boot"></div>
+            <div class="sect">Keyboard</div>
+            <div class="kv" id="keys"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid wb" id="wb-loaded" style="display:none">
+        <div class="srcstrip">
+          <span class="tag" id="src-kind">SRC</span>
+          <span class="ttl" id="src-title"></span>
+          <span class="f" id="src-chan"></span>
+          <span class="f">DUR <b id="src-dur"></b></span>
+          <span class="f" id="src-id"></span>
+        </div>
+
+        <div class="panel">
+          <div class="ph"><span class="id">DS-01</span>Source monitor<span class="right faint mono" id="mon-fmt"></span></div>
+          <div class="monitor">
+            <video id="video" playsinline preload="metadata"></video>
+            <div class="ovl" id="ovl-src">SRC</div><div class="ovl r" id="ovl-tc">00:00:00</div>
+            <div class="player-msg" id="player-msg" style="display:none"></div>
+          </div>
+          <div class="transport">
+            <button class="btn" id="tp-play" title="Play / pause (Space)">PLAY</button>
+            <button class="btn minimal" id="tp-back" title="Back 10s (J)">−10</button>
+            <button class="btn minimal" id="tp-fwd" title="Forward 10s (L)">+10</button>
+            <span class="tc" id="tp-tc">00:00:00 <small>/ 00:00:00</small></span>
+            <span style="flex:1"></span>
+            <button class="btn" id="tp-in">MARK IN <span class="key">I</span></button>
+            <button class="btn" id="tp-out">MARK OUT <span class="key">O</span></button>
+            <span class="sep"></span>
+            <button class="btn minimal" id="tp-loop">PLAY RANGE</button>
+            <button class="btn minimal" id="tp-clear">CLEAR</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="ph"><span class="id">DS-02</span>Signal timeline<span class="right"><span class="mono t2" id="tl-signal"></span><span class="mono faint" id="tl-status"></span></span></div>
+          <div class="tlwrap"><canvas class="tl" id="tl"></canvas></div>
+        </div>
+
+        <div class="side-col">
+          <div class="panel">
+            <div class="ph"><span class="id">DS-03</span>Work order<span class="right"><span class="tag" id="wo-state">NO RANGE</span></span></div>
+            <div class="kv">
+              <div>In</div><div><input class="input mono" id="sel-in" placeholder="--:--:--"></div>
+              <div>Out</div><div><input class="input mono" id="sel-out" placeholder="--:--:--"></div>
+              <div>Length</div><div class="data" id="sel-len">—</div>
+              <div>Mode</div><div><select class="input" id="opt-mode"><option value="ai">AI SELECTION</option><option value="exact">EXACT CUT</option></select></div>
+              <div>Units</div><div><select class="input" id="opt-clips"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>6</option><option>8</option><option>10</option></select></div>
+              <div>Unit length</div><div><select class="input" id="opt-len"><option value="15-30">15–30 s</option><option value="20-45" selected>20–45 s</option><option value="30-60">30–60 s</option><option value="45-90">45–90 s</option></select></div>
+              <div>Layout</div><div><select class="input" id="opt-layout">
+                <option value="auto">AUTO</option><option value="split">FACECAM / GAMEPLAY</option><option value="track">FOLLOW SPEAKER</option>
+                <option value="zoom">GAMEPLAY ZOOM</option><option value="fit">FULL FRAME / BLUR</option><option value="center">CENTER CROP</option></select></div>
+            </div>
+            <div class="pad"><button class="btn amber wide" id="send" disabled>DISPATCH TO FACTORY ▸</button>
+              <div class="faint" style="margin-top:6px;font-size:10.5px">Only the selected range is pulled, transcribed and analyzed.</div>
+              <button class="btn wide" id="send-auto" style="margin-top:10px">AUTO-CLIP WHOLE STREAM ▸</button></div>
+          </div>
+          <div class="panel">
+            <div class="ph"><span class="id">DS-04</span>Signal peaks<span class="right faint mono" id="hot-src"></span></div>
+            <div class="pb" id="hot"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FACTORY -->
+    <section class="page" id="page-factory">
+      <div class="grid split">
+        <div class="panel">
+          <div class="ph"><span class="id">FC-01</span>Production line</div>
+          <div class="metrics">
+            <div><div class="l">Active</div><div class="v" id="k-run">0</div></div>
+            <div><div class="l">Queued</div><div class="v" id="k-queue">0</div></div>
+            <div><div class="l">Shipped</div><div class="v" id="k-done">0</div></div>
+            <div><div class="l">Faults</div><div class="v" id="k-fail">0</div></div>
+            <div><div class="l">Units produced</div><div class="v" id="k-clips">0</div></div>
+          </div>
+          <div class="pb" id="orders"></div>
+        </div>
+        <div class="panel">
+          <div class="ph"><span class="id">FC-02</span>Work order detail<span class="right mono data" id="wo-id"></span></div>
+          <div class="pb" id="wo-detail"><div class="empty"><b>NO ORDER SELECTED</b>Select a row on the production line.</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PACKAGING -->
+    <section class="page" id="page-packaging">
+      <div class="grid pkg">
+        <div class="panel">
+          <div class="ph"><span class="id">PK-01</span>Units<span class="right faint mono" id="pk-count"></span></div>
+          <div class="filters">
+            <input class="input" id="pk-q" placeholder="Filter" style="flex:1">
+            <select class="input" id="pk-order"><option value="">ALL ORDERS</option></select>
+          </div>
+          <div class="pb" id="pk-units"></div>
+        </div>
+
+        <div class="panel">
+          <div class="ph"><span class="id">PK-02</span>Edit bay<span class="right mono data" id="pk-id"></span></div>
+          <div class="bay" id="bay">
+            <div class="empty" id="bay-empty"><b>NO UNIT LOADED</b>Pick a unit on the left to package it.</div>
+            <div class="bay-main" id="bay-main" style="display:none">
+              <div class="bay-stage" id="bay-stage">
+                <div class="phone" id="phone">
+                  <div class="phone-fx" id="phone-fx"><video id="pv" playsinline preload="auto"></video></div>
+                  <div class="pv-hook" id="pv-hook"></div>
+                  <div class="pv-cap" id="pv-cap"></div>
+                  <div class="pv-flash" id="pv-flash"></div>
+                </div>
+              </div>
+              <div class="transport">
+                <button class="btn" id="pv-play">PLAY</button>
+                <span class="tc" id="pv-tc">00:00.0 <small>/ 00:00.0</small></span>
+                <label class="mono t2" style="font-size:10.5px;display:flex;gap:5px;align-items:center;margin-left:8px"><input type="checkbox" id="pv-snap" checked>SNAP TO WORDS</label>
+                <span style="flex:1"></span>
+                <span class="muted mono" style="font-size:10.5px">SOUND</span>
+                <select class="input" id="pv-sound" style="width:140px"></select>
+                <button class="btn amber" id="pv-add">DROP AT PLAYHEAD <span class="key">B</span></button>
+              </div>
+              <div class="track-wrap">
+                <div class="track" id="track"><canvas class="track-wave" id="wave"></canvas><div class="track-trim l" id="trim-l"></div><div class="track-trim r" id="trim-r"></div><div class="track-ph" id="track-ph"></div></div>
+                <div class="track-words" id="track-words"></div>
+              </div>
+              <div class="acts" style="border-top:1px solid var(--line)">
+                <button class="btn" id="pk-suggest" title="The AI marks where hits could go. Nothing is added until you accept it.">SUGGEST HITS</button>
+                <button class="btn amber" id="pk-accept-all" style="display:none">ACCEPT ALL</button>
+                <button class="btn minimal" id="pk-dismiss" style="display:none">DISMISS</button>
+                <span class="sep"></span>
+                <button class="btn minimal" id="pk-clear">CLEAR MY SOUNDS</button>
+                <span style="flex:1"></span>
+                <span class="mono faint" id="pk-saved"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="ph"><span class="id">PK-03</span>Properties</div>
+          <div class="pb" id="props">
+            <div id="sugg-wrap" style="display:none"><div class="sect">Suggestions</div><div id="sugg"></div></div>
+            <div id="pk-why-box" style="display:none"><div class="sect">Why this was picked</div>
+              <div style="padding:0 10px 8px"><div class="t2" id="pk-what" style="font-size:11px;line-height:1.4"></div><div class="why" id="pk-why" style="margin-top:5px"></div></div></div>
+            <div class="sect">Selected hit</div>
+            <div id="hit-props"><div class="empty" style="padding:12px">Click a marker on the track.</div></div>
+            <div class="sect">Sound library<span style="flex:1"></span><button class="btn minimal" id="sfx-import">IMPORT…</button><button class="btn minimal" id="sfx-folder">FOLDER</button><input type="file" id="sfx-file" accept="audio/*" hidden multiple></div>
+            <div id="sfx-lib"></div>
+            <div class="sect">Text</div>
+            <div class="kv">
+              <div>Hook</div><div style="display:flex;gap:6px"><input type="checkbox" id="pk-hook-on"><input class="input" id="pk-hook" style="flex:1"></div>
+              <div>Captions</div><div style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="pk-cap-on"><select class="input" id="pk-color" style="flex:1">
+                <option value="yellow">YELLOW</option><option value="green">GREEN</option><option value="red">RED</option><option value="cyan">CYAN</option><option value="pink">PINK</option><option value="white">WHITE</option></select></div>
+              <div>Trim</div><div style="display:flex;gap:6px"><input class="input mono" id="pk-in" style="width:50%"><input class="input mono" id="pk-out" style="width:50%"></div>
+            </div>
+            <div class="sect">Transcript<span style="flex:1"></span><button class="btn minimal" id="pk-apply-text">APPLY EDITS</button></div>
+            <div style="padding:0 10px 10px"><textarea class="input" id="pk-text" rows="6" style="width:100%;height:auto;padding:6px;line-height:1.45;resize:vertical"></textarea>
+              <div class="faint" style="font-size:10.5px;margin-top:4px">Fix misheard words here. Timing is kept for unchanged words.</div></div>
+          </div>
+          <div class="pad" style="border-top:1px solid var(--line)">
+            <button class="btn amber wide" id="pk-render">RENDER PACKAGE ▸</button>
+            <button class="btn primary wide" id="pk-ship" style="display:none;margin-top:6px">SHIP TO DOWNLOADS ▸</button>
+            <div class="meter" id="pk-meter" style="margin-top:6px"><i></i></div>
+            <div class="mono t2" id="pk-status" style="font-size:10.5px;margin-top:4px">—</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SHIPPING -->
+    <section class="page" id="page-shipping">
+      <div class="grid split">
+        <div class="panel">
+          <div class="ph"><span class="id">SH-01</span>Shipping manifest<span class="right"><span class="mono faint" id="sh-dest"></span>
+            <button class="btn amber" id="sh-all">SHIP ALL READY</button></span></div>
+          <div class="pb" id="sh-list"></div>
+        </div>
+        <div class="panel">
+          <div class="ph"><span class="id">SH-02</span>Shipment<span class="right mono data" id="sh-id"></span></div>
+          <div class="pb" id="sh-detail"><div class="empty"><b>NOTHING SELECTED</b>Packaged units appear here.</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SYSTEM -->
+    <section class="page" id="page-system">
+      <div class="grid sys">
+        <div class="panel">
+          <div class="ph"><span class="id">SY-01</span>Provisioning<span class="right"><button class="btn" id="retry-setup">RETRY</button></span></div>
+          <div class="pb" id="steps"></div>
+        </div>
+        <div class="panel">
+          <div class="ph"><span class="id">SY-02</span>Configuration</div>
+          <div class="pb"><div class="kv" id="config"></div>
+            <div class="sect">Language model</div>
+            <div class="pad" style="display:flex;gap:6px;flex-wrap:wrap">
+              <select class="input" id="llm-pick" style="flex:1;min-width:220px"></select>
+              <input class="input mono" id="llm-custom" placeholder="or any Ollama tag" style="width:170px">
+              <button class="btn amber" id="llm-use">USE</button>
+              <div class="faint" id="llm-note" style="width:100%;font-size:10.5px;margin-top:2px"></div>
+            </div></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <footer class="status">
+    <span><i class="led off" id="st-led"></i><span id="st-engine">ENGINE</span></span>
+    <span>LLM <b id="st-llm">—</b></span>
+    <span>QUEUE <b id="st-queue">0</b></span>
+    <span class="grow" id="st-active">IDLE</span>
+    <span id="st-exports">EXPORTS —</span>
+    <span id="st-ver">v—</span>
+  </footer>
+</div>
+<div class="toast" id="toast"></div>
+<script src="/static/vendor/hls.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
